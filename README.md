@@ -27,6 +27,80 @@ the upstream tracker. What this fork adds over upstream:
 
 Built against Minecraft 26.2 and requires JDK 25.
 
+## How to use
+
+### What you need
+
+A **Fabric server on Minecraft 26.2** with these mods installed alongside Hydraulic-Plus:
+
+| Mod | Why |
+|---|---|
+| [Fabric API](https://modrinth.com/mod/fabric-api) | required by Hydraulic |
+| [Geyser](https://geysermc.org/download) (Fabric build) | lets Bedrock clients connect at all |
+| [Floodgate](https://geysermc.org/download) (Fabric build) | lets them connect without a Java account |
+
+Hydraulic is **server-side**. Bedrock players install nothing; they join through Geyser as usual.
+
+### Installing
+
+1. Drop the jar into your server's `mods` folder, next to Geyser and Floodgate.
+2. Start the server. On the first start Hydraulic converts each mod's assets into Bedrock resource
+   packs, which takes **tens of seconds to a few minutes** depending on how many mods you have.
+3. Join from Bedrock. Accept the resource pack when prompted - the modded blocks, items and mobs live
+   in it, so declining leaves you seeing nothing.
+
+Converted packs are cached under `config/hydraulic/storage`, so later starts are fast. They are
+rebuilt whenever Hydraulic's own jar changes, so expect one slow start after every update.
+
+### Raise the watchdog timeout before your first start
+
+Conversion runs while the server is starting, and Minecraft's watchdog kills a server whose tick
+takes longer than 60 seconds - which a large modpack's first conversion genuinely can. In
+`server.properties`:
+
+```properties
+max-tick-time=180000
+```
+
+Without this, a big pack can force-shut the server down mid-conversion. Restarting simply repeats it,
+so this is worth setting before the first start rather than after.
+
+### Mobs from mods that are not GeckoLib
+
+Some mods define their entity models in client-only code rather than shipping model files, so a
+dedicated server has no shape to send to Bedrock. Those mobs arrive as a stand-in (a pig, a bat)
+until their real models have been read once:
+
+1. Launch the **Java client** once with exactly the same mods installed.
+2. Join any world - singleplayer is fine - and let the mobs in question appear on screen.
+3. Copy `config/hydraulic/entity-geometry` from that client into the server's `config/hydraulic`,
+   then restart the server.
+
+GeckoLib mods need none of this; their models are already in a format Bedrock reads. The server log
+names any entity still waiting on a model, and says which of these two cases it is.
+
+### Running alongside Polymer
+
+If your server runs [Polymer](https://github.com/Patbox/polymer), both mods are solving the same
+problem for different audiences: Polymer disguises modded content as vanilla so unmodified **Java**
+clients see something sensible, while Hydraulic converts it properly for **Bedrock**. Hydraulic keeps
+the two apart automatically - Java players keep their disguises, Bedrock players are sent the real
+blocks and items. To turn that off, in `config/hydraulic/config.json`:
+
+```json
+{ "hidePolymerFromBedrock": false }
+```
+
+### Building it yourself
+
+Requires **JDK 25**:
+
+```bash
+./gradlew build
+```
+
+The jar is written to `fabric/build/libs/hydraulic-fabric.jar`.
+
 ## What is Hydraulic?
 Hydraulic is a server-side mod, which allows for Bedrock players to join modded Minecraft: Java Edition servers. This project works alongside [Geyser](https://github.com/GeyserMC/Geyser) to make this possible.
 
