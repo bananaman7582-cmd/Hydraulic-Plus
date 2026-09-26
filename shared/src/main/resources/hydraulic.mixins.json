@@ -1,0 +1,37 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "org.geysermc.hydraulic.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "mixins": [
+    "ext.BlockRegistryPopulatorMixin",
+    "ext.BlockStateSerializerMixin",
+    "ext.ItemTranslatorMixin",
+    "ext.MinecraftResourcePackReaderImplMixin",
+    "ext.InventoryUtilsMixin",
+    "ext.CustomItemRegistryPopulatorMixin",
+    "ext.MinecraftLocaleMixin",
+    "ext.ModelSerializerMixin",
+    "server.EntityAccessor",
+    "server.ItemEntityAccessor",
+    "server.PlayerListMixin",
+    "server.ServerPlayerMixin",
+    "server.ServerPlayerGameModeMixin",
+    "server.ServerCommonPacketListenerImplMixin",
+    "server.MinecraftServerMixin"
+  ],
+  "client": [
+    "client.CubeDefinitionAccessor",
+    "client.CubeDeformationAccessor",
+    "client.EntityModelSetMixin",
+    "client.EntityRenderDispatcherAccessor",
+    "client.EntityRenderDispatcherMixin",
+    "client.MinecraftMixin",
+    "client.LayerDefinitionAccessor",
+    "client.MaterialDefinitionAccessor",
+    "client.PartDefinitionAccessor"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "org.geysermc.hydraulic.fabric.mixin.polymer",
+  "compatibilityLevel": "JAVA_25",
+  "plugin": "org.geysermc.hydraulic.fabric.polymer.PolymerMixinPlugin",
+  "mixins": [
+    "BlockMapperMixin",
+    "PolyBaseItemMixin",
+    "PacketPatcherMixin",
+    "PolymerBlockUtilsMixin",
+    "PolymerItemUtilsMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}
