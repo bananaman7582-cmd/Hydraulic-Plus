@@ -10,7 +10,7 @@ Hydraulic is an open collaboration project by [CubeCraft Games](https://cubecraf
 ## About this fork
 
 This is [Hydraulic-Plus](https://github.com/bananaman7582-cmd/Hydraulic-Plus), an unofficial fork
-maintained by **Bananaman**, built on top of the original work by
+maintained by me, **Bananaman**, built on top of the original work by
 [GeyserMC](https://github.com/GeyserMC/Hydraulic) and [CubeCraft Games](https://cubecraft.net). All
 credit for Hydraulic itself belongs to them; this fork only adds to it.
 
