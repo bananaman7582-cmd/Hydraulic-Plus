@@ -304,7 +304,7 @@ public class ServerCommonPacketListenerImplMixin {
         }
 
         if (packet instanceof ClientboundRemoveEntitiesPacket removed) {
-            removed.getEntityIds().forEach(id -> {
+            removed.entityIds().forEach(id -> {
                 this.hydraulic$substituted.remove(id);
                 this.hydraulic$names.remove(id);
             });
@@ -735,17 +735,18 @@ public class ServerCommonPacketListenerImplMixin {
      */
     @Unique
     private static Packet<?> hydraulic$substituteModdedParticle(@NotNull ClientboundLevelParticlesPacket packet) {
-        ParticleOptions particle = packet.getParticle();
+        ParticleOptions particle = packet.particle();
         Identifier key = BuiltInRegistries.PARTICLE_TYPE.getKey(particle.getType());
         if (key == null || key.getNamespace().equals("minecraft")) {
             return packet;
         }
 
         return new ClientboundLevelParticlesPacket(hydraulic$vanillaLookalike(key.getPath()),
-                packet.isOverrideLimiter(), packet.alwaysShow(),
-                packet.getX(), packet.getY(), packet.getZ(),
-                packet.getXDist(), packet.getYDist(), packet.getZDist(),
-                packet.getMaxSpeed(), packet.getCount());
+                packet.overrideLimiter(), packet.alwaysShow(),
+                packet.x(), packet.y(), packet.z(),
+                packet.xDist(), packet.yDist(), packet.zDist(),
+                packet.xMaxSpeed(), packet.yMaxSpeed(), packet.zMaxSpeed(),
+                packet.count(), packet.randomizationType());
     }
 
     /**

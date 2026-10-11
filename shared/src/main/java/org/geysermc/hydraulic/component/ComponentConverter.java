@@ -68,7 +68,10 @@ public class ComponentConverter {
                         .maxCreativeReach(component.maxCreativeReach())
                         .hitboxMargin(component.hitboxMargin())
                         .build()));
-        addComponentConversion(DataComponents.SWING_ANIMATION, (component, map, definition, options) ->
+        addComponentConversion(DataComponents.ATTACK_ANIMATION, (component, map, definition, options) ->
+                definition.component(JavaItemDataComponents.ATTACK_ANIMATION,
+                        JavaSwingAnimation.builder().duration(component.duration()).build()));
+        addComponentConversion(DataComponents.INTERACT_ANIMATION, (component, map, definition, options) ->
                 definition.component(JavaItemDataComponents.SWING_ANIMATION,
                         JavaSwingAnimation.builder().duration(component.duration()).build()));
         addComponentConversion(DataComponents.USE_EFFECTS, (component, map, definition, options) ->

@@ -63,7 +63,7 @@ dependencies {
 
     // Compiled against so the Polymer mixins can name real types; never required at runtime. The
     // mixin config plugin beside them declines to apply them when Polymer is not installed
-    compileOnly("eu.pb4:polymer-core:0.17.4+26.2")
+    compileOnly("eu.pb4:polymer-core:0.18.4+26.3")
 
     runtimeOnly(libs.pack.converter)
     includeTransitive(libs.pack.converter)

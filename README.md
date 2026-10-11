@@ -17,7 +17,7 @@ credit for Hydraulic itself belongs to them; this fork only adds to it.
 It is **not** affiliated with or endorsed by GeyserMC, and issues found here should not be reported to
 the upstream tracker. What this fork adds over upstream:
 
-- A port to Minecraft 26.2
+- A port to Minecraft 26.3
 - Entity model and animation support for mods that define their models in client code, including
   GeckoLib and Citadel mods
 - Coexistence with [Polymer](https://github.com/Patbox/polymer): Java players keep Polymer's
@@ -25,13 +25,13 @@ the upstream tracker. What this fork adds over upstream:
 - Modded fluids drawn as stand-in blocks, block light emission, and a number of block and item
   conversion fixes
 
-Built against Minecraft 26.2 and requires JDK 25.
+Built against Minecraft 26.3 and requires JDK 25.
 
 ## How to use
 
 ### What you need
 
-A **Fabric server on Minecraft 26.2** with these mods installed alongside Hydraulic-Plus:
+A **Fabric server on Minecraft 26.3** with these mods installed alongside Hydraulic-Plus:
 
 | Mod | Why |
 |---|---|

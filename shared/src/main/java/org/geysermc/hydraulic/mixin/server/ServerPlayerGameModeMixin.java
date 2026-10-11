@@ -27,6 +27,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  */
 @Mixin(ServerPlayerGameMode.class)
 public class ServerPlayerGameModeMixin {
+    private static final int HYDRAULIC_SWING_MAIN_HAND = 0;
+    private static final int HYDRAULIC_SWING_OFF_HAND = 3;
+
     @Inject(method = "useItemOn", at = @At("RETURN"))
     private void hydraulic$swingOnUse(ServerPlayer player, Level level, ItemStack stack, InteractionHand hand,
                                       BlockHitResult hit, CallbackInfoReturnable<InteractionResult> cir) {
@@ -41,7 +44,7 @@ public class ServerPlayerGameModeMixin {
 
         player.connection.send(new ClientboundAnimatePacket(player,
                 hand == InteractionHand.MAIN_HAND
-                        ? ClientboundAnimatePacket.SWING_MAIN_HAND
-                        : ClientboundAnimatePacket.SWING_OFF_HAND));
+                        ? HYDRAULIC_SWING_MAIN_HAND
+                        : HYDRAULIC_SWING_OFF_HAND));
     }
 }

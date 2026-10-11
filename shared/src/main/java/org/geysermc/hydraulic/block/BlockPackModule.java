@@ -969,10 +969,11 @@ public class BlockPackModule extends PackModule<BlockPackModule> {
                 }
 
                 PistonBehavior pistonBehavior = switch (state.getPistonPushReaction()) {
-                    case BLOCK -> PistonBehavior.BLOCK;
-                    case DESTROY -> PistonBehavior.DESTROY;
-                    case PUSH_ONLY -> PistonBehavior.PUSH_ONLY;
-                    default -> PistonBehavior.NORMAL;
+                    case IMMOVEABLE -> PistonBehavior.IMMOVEABLE;
+                    case POPPED -> PistonBehavior.POPPED;
+                    case PUSH -> PistonBehavior.PUSH;
+                    case IGNORE_ENTITY -> PistonBehavior.IGNORE_ENTITY;
+                    default -> PistonBehavior.PUSH_PULL;
                 };
 
                 CustomBlockState customBlockState = stateBuilder.build();
