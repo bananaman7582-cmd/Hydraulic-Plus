@@ -282,6 +282,15 @@ public class ServerCommonPacketListenerImplMixin {
             return hydraulic$inlineModdedSound(soundPacket);
         }
 
+        // Some server-side compatibility mods emit an entity-data packet even when there is no
+        // dirty data to put in it. Minecraft's 26.2 encoder then writes no end marker, leaving a
+        // four-byte packet which Geyser repeatedly tries to read a fifth byte from. This is not
+        // limited to Hydraulic's substituted entities (Polymer block displays can do it too), so
+        // make every empty metadata packet structurally complete for Bedrock recipients.
+        if (packet instanceof ClientboundSetEntityDataPacket data && data.packedItems().isEmpty()) {
+            return this.hydraulic$metadataWithCurrentFlags(data.id());
+        }
+
         // A spawn and the metadata describing it travel together in one bundle, so both of these have
         // to be seen from in here rather than from the outside
         if (packet instanceof ClientboundSetEntityDataPacket data
@@ -301,10 +310,7 @@ public class ServerCommonPacketListenerImplMixin {
             // error. Preserve the entity's current universal flags when the modded-only update left
             // us with nothing else to send.
             if (kept.isEmpty()) {
-                ServerGamePacketListenerImpl listener = (ServerGamePacketListenerImpl) (Object) this;
-                net.minecraft.world.entity.Entity entity = listener.getPlayer().level().getEntity(data.id());
-                byte flags = entity == null ? 0 : entity.getEntityData().get(EntityAccessor.hydraulic$dataSharedFlags());
-                kept.add(SynchedEntityData.DataValue.create(EntityAccessor.hydraulic$dataSharedFlags(), flags));
+                kept.add(this.hydraulic$currentFlags(data.id()));
             }
 
             Component name = this.hydraulic$names.get(data.id());
@@ -379,6 +385,19 @@ public class ServerCommonPacketListenerImplMixin {
         }
 
         return packet;
+    }
+
+    @Unique
+    private ClientboundSetEntityDataPacket hydraulic$metadataWithCurrentFlags(int entityId) {
+        return new ClientboundSetEntityDataPacket(entityId, List.of(this.hydraulic$currentFlags(entityId)));
+    }
+
+    @Unique
+    private SynchedEntityData.DataValue<Byte> hydraulic$currentFlags(int entityId) {
+        ServerGamePacketListenerImpl listener = (ServerGamePacketListenerImpl) (Object) this;
+        net.minecraft.world.entity.Entity entity = listener.getPlayer().level().getEntity(entityId);
+        byte flags = entity == null ? 0 : entity.getEntityData().get(EntityAccessor.hydraulic$dataSharedFlags());
+        return SynchedEntityData.DataValue.create(EntityAccessor.hydraulic$dataSharedFlags(), flags);
     }
 
     /** Preserves custom map markers as readable vanilla target dots instead of losing the map update. */
@@ -613,10 +632,21 @@ public class ServerCommonPacketListenerImplMixin {
             return hydraulic$isVanillaSlot(dyed.dye()) && hydraulic$isVanillaSlot(dyed.target());
         }
 
-        // Empty, tag and any-fuel displays do not put a concrete modded registry id on the wire.
-        return slot instanceof SlotDisplay.Empty
-                || slot instanceof SlotDisplay.TagSlotDisplay
-                || slot instanceof SlotDisplay.AnyFuel;
+        if (slot instanceof SlotDisplay.TagSlotDisplay tag) {
+            // A minecraft-namespaced tag can still contain modded items after datapacks merge it.
+            // Geyser expands the tag, encounters that custom item beside an empty shaped-recipe
+            // slot, and its descriptor comparator throws. Inspect the resolved holders rather than
+            // trusting the tag's own namespace.
+            return BuiltInRegistries.ITEM.get(tag.tag())
+                    .map(holders -> holders.stream().allMatch(holder -> holder.unwrapKey()
+                            .map(key -> key.identifier().getNamespace().equals(Identifier.DEFAULT_NAMESPACE))
+                            .orElse(false)))
+                    .orElse(false);
+        }
+
+        // Empty displays are safe. Any-fuel expands through a server-side set which can contain
+        // custom fuels, so omit those recipe-book entries instead of risking the whole join packet.
+        return slot instanceof SlotDisplay.Empty;
     }
 
     /**

@@ -47,16 +47,12 @@ public class PackListener {
     private final PackManager manager;
 
     static {
-        // Nearly every core, because there is nothing to share them with. The server thread spends
-        // this entire stretch blocked in join() below waiting for these very tasks, so holding cores
-        // back for it protects a thread that is doing nothing - it only leaves the machine idle while
-        // the watchdog counts towards the sixty seconds at which it declares the server dead. One is
-        // left over for the rest of the system rather than for the server.
-        //
-        // This helps in proportion to how many mods there are, and does nothing for a pack whose one
-        // enormous mod is the long pole. A hundred and fifteen packs is the first case.
+        // Each conversion holds an unpacked Java pack and a Bedrock pack in memory at the same time.
+        // Running one task per CPU core therefore makes large modpacks consume several copies of
+        // their biggest assets concurrently; on a twelve-core server this was enough to exceed the
+        // configured memory limit. Four workers retain useful parallelism while bounding that peak.
         THREAD_POOL = Executors.newFixedThreadPool(
-            Math.max(2, Runtime.getRuntime().availableProcessors() - 1),
+            Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors() / 2)),
             new ThreadFactoryBuilder()
                 .setNameFormat(Constants.MOD_NAME + " Conversion Thread #%d")
                 .setUncaughtExceptionHandler((thread, throwable) -> LOGGER.error("Uncaught exception in thread {}", thread.getName(), throwable))
