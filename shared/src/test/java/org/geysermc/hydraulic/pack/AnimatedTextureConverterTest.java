@@ -1,18 +1,26 @@
 package org.geysermc.hydraulic.pack;
 
+import com.google.gson.Gson;
+import net.kyori.adventure.key.Key;
+import org.geysermc.pack.bedrock.resource.BedrockResourcePack;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import team.unnamed.creative.base.Writable;
 import team.unnamed.creative.metadata.animation.AnimationFrame;
 import team.unnamed.creative.metadata.animation.AnimationMeta;
+import team.unnamed.creative.texture.Texture;
 
 import javax.imageio.ImageIO;
 import java.awt.Color;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AnimatedTextureConverterTest {
     @Test
@@ -55,6 +63,24 @@ class AnimatedTextureConverterTest {
                 List.of(AnimationFrame.of(2)));
 
         assertThrows(Exception.class, () -> AnimatedTextureConverter.convert(png(source), metadata));
+    }
+
+    @Test
+    void registersAdvancedBedrockFlipbookFieldsAndConvertedPng(@TempDir Path directory) throws Exception {
+        BufferedImage source = new BufferedImage(2, 4, BufferedImage.TYPE_INT_ARGB);
+        byte[] sourcePng = png(source);
+        Texture texture = Texture.of(Key.key("example", "item/clock.png"), Writable.bytes(sourcePng));
+        AnimationMeta metadata = AnimationMeta.of(false, -1, -1, 2,
+                List.of(AnimationFrame.of(1), AnimationFrame.of(0)));
+        BedrockResourcePack pack = new BedrockResourcePack(directory);
+
+        AnimatedTextureConverter.register(pack, texture, metadata,
+                "example:clock", "textures/items/example/clock");
+
+        String json = new Gson().toJson(pack.flipbookTextures().get("example:clock"));
+        assertTrue(json.contains("\"frames\":[1,0]"));
+        assertTrue(json.contains("\"blend_frames\":false"));
+        assertTrue(pack.extraFiles().containsKey("textures/items/example/clock.png"));
     }
 
     private static void paint(BufferedImage image, int x, Color color) {

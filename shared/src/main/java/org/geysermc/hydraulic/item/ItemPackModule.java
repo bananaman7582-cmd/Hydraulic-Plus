@@ -241,7 +241,9 @@ public class ItemPackModule extends TexturePackModule<ItemPackModule> {
 
         for (Texture texture : assets.textures()) {
             Key key = texture.key();
-            if (!key.value().startsWith("item/") || !texture.hasMetadata()) {
+            // Item models may legitimately use a block or another atlas texture (especially
+            // BlockItems), so index every animated texture rather than only item/*.png.
+            if (!texture.hasMetadata()) {
                 continue;
             }
 
