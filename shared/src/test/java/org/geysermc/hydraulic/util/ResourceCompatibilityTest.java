@@ -51,6 +51,29 @@ class ResourceCompatibilityTest {
     }
 
     @Test
+    void normalisesNegativeBlockstateQuarterTurns() {
+        JsonObject variant = JsonParser.parseString("""
+                {"model":"example:block/pillar","x":-90,"y":90}
+                """).getAsJsonObject();
+
+        assertTrue(ResourceCompatibility.simplifyModdedRendering(variant));
+        assertEquals(270, variant.get("x").getAsInt());
+        assertEquals(90, variant.get("y").getAsInt());
+    }
+
+    @Test
+    void dropsUnsupportedBabyEquipmentLayer() {
+        JsonObject equipment = JsonParser.parseString("""
+                {"layers":{"humanoid":[{"texture":"example:adult"}],
+                 "humanoid_baby":[{"texture":"example:baby"}]}}
+                """).getAsJsonObject();
+
+        assertTrue(ResourceCompatibility.simplifyModdedRendering(equipment));
+        assertTrue(equipment.getAsJsonObject("layers").has("humanoid"));
+        assertFalse(equipment.getAsJsonObject("layers").has("humanoid_baby"));
+    }
+
+    @Test
     void createsReadableFallbackNames() {
         assertEquals("Rubble Shield", ResourceCompatibility.readableName("rubble_shield"));
         assertEquals("Ancient Cave Painting", ResourceCompatibility.readableName("ancient/cave-painting"));

@@ -75,6 +75,14 @@ public class PackLogListener implements LogListener {
 
     @Override
     public void error(@NotNull String s) {
+        // Signs are drawn by a Java block-entity renderer and their generated template parents are
+        // not real vanilla model files. Hydraulic deliberately turns these into empty geometry, so
+        // this is a known visual limitation rather than a failed pack conversion.
+        if (s.startsWith("Could not find parent model minecraft:block/template_")
+                && s.contains("sign")) {
+            this.once(s, this.logger::warn);
+            return;
+        }
         this.once(s, this.logger::error);
     }
 

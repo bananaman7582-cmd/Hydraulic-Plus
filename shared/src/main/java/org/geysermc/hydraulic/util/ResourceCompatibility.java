@@ -43,6 +43,26 @@ public final class ResourceCompatibility {
             return false;
         }
 
+        // Java accepts negative quarter-turns in blockstate variants, while the resource library
+        // insists on their equivalent positive form. Normalise only variant-shaped objects (those
+        // naming a model), leaving item display transforms and arbitrary data untouched.
+        if (object.get("model") instanceof JsonPrimitive model && model.isString()) {
+            changed |= normaliseQuarterTurn(object, "x");
+            changed |= normaliseQuarterTurn(object, "y");
+        }
+
+        // 26.2 introduced the baby humanoid equipment layer before the converter library learned
+        // its enum name. The adult layer is the closest usable Bedrock representation and these
+        // files normally provide the same texture for both.
+        if (object.get("layers") instanceof JsonObject layers
+                && layers.has("humanoid_baby")) {
+            if (!layers.has("humanoid")) {
+                layers.add("humanoid", layers.get("humanoid_baby").deepCopy());
+            }
+            layers.remove("humanoid_baby");
+            changed = true;
+        }
+
         // Custom item-model properties are Java code. They cannot be evaluated while producing a
         // static Bedrock item definition, but their ordinary/fallback branch remains useful. More
         // importantly, strict parsers must not discard the complete item just because they do not
@@ -98,6 +118,24 @@ public final class ResourceCompatibility {
             changed |= simplifyModdedRendering(entry.getValue());
         }
         return changed;
+    }
+
+    private static boolean normaliseQuarterTurn(JsonObject object, String axis) {
+        JsonElement value = object.get(axis);
+        if (!(value instanceof JsonPrimitive primitive) || !primitive.isNumber()) {
+            return false;
+        }
+        int angle;
+        try {
+            angle = primitive.getAsInt();
+        } catch (NumberFormatException ignored) {
+            return false;
+        }
+        if (angle >= 0 || angle % 90 != 0) {
+            return false;
+        }
+        object.addProperty(axis, Math.floorMod(angle, 360));
+        return true;
     }
 
     /** Turns a registry path into a readable fallback name without changing explicit translations. */

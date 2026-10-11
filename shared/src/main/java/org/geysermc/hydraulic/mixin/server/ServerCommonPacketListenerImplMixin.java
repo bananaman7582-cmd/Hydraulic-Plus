@@ -45,6 +45,12 @@ import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.item.crafting.display.RecipeDisplay;
+import net.minecraft.world.item.crafting.display.FurnaceRecipeDisplay;
+import net.minecraft.world.item.crafting.display.ShapedCraftingRecipeDisplay;
+import net.minecraft.world.item.crafting.display.ShapelessCraftingRecipeDisplay;
+import net.minecraft.world.item.crafting.display.SlotDisplay;
+import net.minecraft.world.item.crafting.display.SmithingRecipeDisplay;
+import net.minecraft.world.item.crafting.display.StonecutterRecipeDisplay;
 import net.minecraft.world.level.saveddata.maps.MapDecoration;
 import net.minecraft.world.level.saveddata.maps.MapDecorationTypes;
 import net.minecraft.world.phys.shapes.VoxelShape;
@@ -290,6 +296,17 @@ public class ServerCommonPacketListenerImplMixin {
             // between a mob that looks wrong and a mob nobody can identify
             List<SynchedEntityData.DataValue<?>> kept = new ArrayList<>(hydraulic$universalData(data));
 
+            // An empty metadata packet has no terminating entry on the wire in 26.2. Geyser then
+            // attempts to read a fifth byte from a four-byte packet and reports a downstream packet
+            // error. Preserve the entity's current universal flags when the modded-only update left
+            // us with nothing else to send.
+            if (kept.isEmpty()) {
+                ServerGamePacketListenerImpl listener = (ServerGamePacketListenerImpl) (Object) this;
+                net.minecraft.world.entity.Entity entity = listener.getPlayer().level().getEntity(data.id());
+                byte flags = entity == null ? 0 : entity.getEntityData().get(EntityAccessor.hydraulic$dataSharedFlags());
+                kept.add(SynchedEntityData.DataValue.create(EntityAccessor.hydraulic$dataSharedFlags(), flags));
+            }
+
             Component name = this.hydraulic$names.get(data.id());
             if (name == null) {
                 return new ClientboundSetEntityDataPacket(data.id(), kept);
@@ -518,12 +535,13 @@ public class ServerCommonPacketListenerImplMixin {
     }
 
     /**
-     * Drops recipes whose display type a mod added, which Geyser cannot read.
+     * Drops recipes whose display type or concrete item a mod added, which Geyser cannot read.
      */
     @Unique
     private static Packet<?> hydraulic$filterModdedRecipes(@NotNull ClientboundRecipeBookAddPacket packet) {
         List<ClientboundRecipeBookAddPacket.Entry> readable = packet.entries().stream()
-                .filter(entry -> hydraulic$isVanillaDisplay(entry.contents().display()))
+                .filter(entry -> hydraulic$isVanillaDisplay(entry.contents().display())
+                        && hydraulic$hasVanillaRecipeItems(entry.contents().display()))
                 .toList();
 
         int dropped = packet.entries().size() - readable.size();
@@ -531,8 +549,74 @@ public class ServerCommonPacketListenerImplMixin {
             return packet;
         }
 
-        hydraulic$LOGGER.debug("Dropped {} recipe(s) with a modded display type", dropped);
+        hydraulic$LOGGER.debug("Dropped {} recipe(s) with a display type or item Geyser cannot compare", dropped);
         return new ClientboundRecipeBookAddPacket(readable, packet.replace());
+    }
+
+    /**
+     * Geyser sorts the resolved entries in a recipe display using its vanilla item registry. A
+     * concrete modded item resolves to an unknown descriptor and makes that comparator throw,
+     * losing the whole recipe packet. The server still accepts the recipe when crafted manually;
+     * only the unsafe recipe-book display is omitted for Bedrock players.
+     */
+    @Unique
+    private static boolean hydraulic$hasVanillaRecipeItems(@NotNull RecipeDisplay display) {
+        if (!hydraulic$isVanillaSlot(display.result()) || !hydraulic$isVanillaSlot(display.craftingStation())) {
+            return false;
+        }
+        if (display instanceof ShapedCraftingRecipeDisplay shaped) {
+            return shaped.ingredients().stream().allMatch(ServerCommonPacketListenerImplMixin::hydraulic$isVanillaSlot);
+        }
+        if (display instanceof ShapelessCraftingRecipeDisplay shapeless) {
+            return shapeless.ingredients().stream().allMatch(ServerCommonPacketListenerImplMixin::hydraulic$isVanillaSlot);
+        }
+        if (display instanceof FurnaceRecipeDisplay furnace) {
+            return hydraulic$isVanillaSlot(furnace.ingredient()) && hydraulic$isVanillaSlot(furnace.fuel());
+        }
+        if (display instanceof StonecutterRecipeDisplay stonecutter) {
+            return hydraulic$isVanillaSlot(stonecutter.input());
+        }
+        if (display instanceof SmithingRecipeDisplay smithing) {
+            return hydraulic$isVanillaSlot(smithing.template())
+                    && hydraulic$isVanillaSlot(smithing.base())
+                    && hydraulic$isVanillaSlot(smithing.addition());
+        }
+        return false;
+    }
+
+    @Unique
+    private static boolean hydraulic$isVanillaSlot(@NotNull SlotDisplay slot) {
+        if (slot instanceof SlotDisplay.ItemSlotDisplay item) {
+            Identifier key = item.item().unwrapKey().map(k -> k.identifier()).orElse(null);
+            return key != null && key.getNamespace().equals(Identifier.DEFAULT_NAMESPACE);
+        }
+        if (slot instanceof SlotDisplay.ItemStackSlotDisplay stack) {
+            Identifier key = stack.stack().item().unwrapKey().map(k -> k.identifier()).orElse(null);
+            return key != null && key.getNamespace().equals(Identifier.DEFAULT_NAMESPACE);
+        }
+        if (slot instanceof SlotDisplay.Composite composite) {
+            return composite.contents().stream().allMatch(ServerCommonPacketListenerImplMixin::hydraulic$isVanillaSlot);
+        }
+        if (slot instanceof SlotDisplay.WithRemainder remainder) {
+            return hydraulic$isVanillaSlot(remainder.input()) && hydraulic$isVanillaSlot(remainder.remainder());
+        }
+        if (slot instanceof SlotDisplay.OnlyWithComponent component) {
+            return hydraulic$isVanillaSlot(component.source());
+        }
+        if (slot instanceof SlotDisplay.WithAnyPotion potion) {
+            return hydraulic$isVanillaSlot(potion.display());
+        }
+        if (slot instanceof SlotDisplay.SmithingTrimDemoSlotDisplay trim) {
+            return hydraulic$isVanillaSlot(trim.base()) && hydraulic$isVanillaSlot(trim.material());
+        }
+        if (slot instanceof SlotDisplay.DyedSlotDemo dyed) {
+            return hydraulic$isVanillaSlot(dyed.dye()) && hydraulic$isVanillaSlot(dyed.target());
+        }
+
+        // Empty, tag and any-fuel displays do not put a concrete modded registry id on the wire.
+        return slot instanceof SlotDisplay.Empty
+                || slot instanceof SlotDisplay.TagSlotDisplay
+                || slot instanceof SlotDisplay.AnyFuel;
     }
 
     /**

@@ -59,7 +59,9 @@ public abstract class MinecraftResourcePackReaderImplMixin {
         )
     )
     private Object deserializeFromJson(JsonResourceDeserializer instance, JsonElement jsonElement, Key key, PackFormat packFormat) throws IOException {
-        if (jsonElement == null) {
+        // Empty language files are valid enough for Minecraft and parse as JsonNull. There is no
+        // resource to add, so do not hand that sentinel to a deserializer expecting an object.
+        if (jsonElement == null || jsonElement.isJsonNull()) {
             return null;
         }
 
@@ -131,7 +133,10 @@ public abstract class MinecraftResourcePackReaderImplMixin {
         try {
             return instance.readFromTree(element);
         } catch (Exception e) {
-            LOGGER.error("Failed to read pack metadata: " + e.getMessage());
+            // Metadata is optional to Hydraulic's conversion. Keep the pack and make the fallback
+            // visible as a warning without reporting a recovered third-party metadata typo as a
+            // Hydraulic conversion failure.
+            LOGGER.warn("Ignoring malformed pack metadata: " + e.getMessage());
             return Metadata.empty();
         }
     }

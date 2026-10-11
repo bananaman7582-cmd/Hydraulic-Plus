@@ -957,6 +957,14 @@ public class BlockPackModule extends PackModule<BlockPackModule> {
             for (BlockState state : block.getStateDefinition().getPossibleStates()) {
                 CustomBlockState.Builder stateBuilder = blockData.blockStateBuilder();
                 for (Property<?> property : state.getProperties()) {
+                    // This property was deliberately omitted from the Bedrock block definition
+                    // above because Bedrock accepts at most sixteen values. Adding it back to the
+                    // state here makes Geyser reject the state with "Unknown property", aborting
+                    // the registry event partway through and shifting every later palette entry.
+                    if (property == oversized) {
+                        continue;
+                    }
+
                     if (property instanceof IntegerProperty intProperty) {
                         stateBuilder.intProperty(property.getName(), state.getValue(intProperty));
                     } else if (property instanceof BooleanProperty booleanProperty) {
