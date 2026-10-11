@@ -47,4 +47,22 @@ public final class PolymerFilter {
         Identifier channel = payload.payload().type().id();
         return channel != null && channel.getNamespace().startsWith(POLYMER);
     }
+
+    /**
+     * Bedrock cannot run a Java mod's payload decoder. Keep channels understood by Minecraft,
+     * Geyser, or Floodgate and discard arbitrary mod channels before one can break packet decoding.
+     */
+    public static boolean isUnreadableModPayload(@NotNull Packet<?> packet) {
+        if (!(packet instanceof ClientboundCustomPayloadPacket payload)) {
+            return false;
+        }
+        Identifier channel = payload.payload().type().id();
+        return channel != null && isUnreadableNamespace(channel.getNamespace());
+    }
+
+    public static boolean isUnreadableNamespace(@NotNull String namespace) {
+        return !namespace.equals(Identifier.DEFAULT_NAMESPACE)
+                && !namespace.equals("geyser")
+                && !namespace.equals("floodgate");
+    }
 }

@@ -2,6 +2,8 @@ package org.geysermc.hydraulic.mixin.server;
 
 import com.mojang.logging.LogUtils;
 import io.netty.channel.ChannelFutureListener;
+import it.unimi.dsi.fastutil.objects.Object2IntMap;
+import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.Holder;
@@ -11,16 +13,20 @@ import net.minecraft.core.particles.SimpleParticleType;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.Packet;
+import net.minecraft.network.protocol.configuration.ClientboundRegistryDataPacket;
 import net.minecraft.network.protocol.game.ClientGamePacketListener;
 import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
+import net.minecraft.network.protocol.game.ClientboundAwardStatsPacket;
 import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
 import net.minecraft.network.protocol.game.ClientboundBundlePacket;
 import net.minecraft.network.protocol.game.ClientboundLevelParticlesPacket;
+import net.minecraft.network.protocol.game.ClientboundMapItemDataPacket;
 import net.minecraft.network.protocol.game.ClientboundRecipeBookAddPacket;
 import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
 import net.minecraft.network.protocol.game.ClientboundRemoveMobEffectPacket;
 import net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket;
+import net.minecraft.network.protocol.game.ClientboundSetActionBarTextPacket;
 import net.minecraft.network.protocol.game.ClientboundSoundPacket;
 import net.minecraft.network.protocol.game.ClientboundUpdateAttributesPacket;
 import net.minecraft.network.protocol.game.ClientboundUpdateMobEffectPacket;
@@ -28,6 +34,7 @@ import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.resources.Identifier;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.server.network.ServerCommonPacketListenerImpl;
+import net.minecraft.server.network.ServerConfigurationPacketListenerImpl;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EntityTypes;
@@ -38,13 +45,19 @@ import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.item.crafting.display.RecipeDisplay;
+import net.minecraft.world.level.saveddata.maps.MapDecoration;
+import net.minecraft.world.level.saveddata.maps.MapDecorationTypes;
 import net.minecraft.world.phys.shapes.VoxelShape;
+import net.minecraft.stats.Stat;
 import org.geysermc.hydraulic.block.BlockItemDisplay;
 import org.geysermc.hydraulic.config.HydraulicConfig;
 import org.geysermc.hydraulic.config.PolymerFilter;
 import org.geysermc.hydraulic.HydraulicImpl;
 import org.geysermc.hydraulic.entity.MissingEntityModels;
 import org.geysermc.hydraulic.entity.VanillaAncestry;
+import org.geysermc.hydraulic.util.ResourceCompatibility;
+import org.geysermc.hydraulic.util.RegistryDataSanitizer;
+import org.geysermc.geyser.api.GeyserApi;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
@@ -119,6 +132,10 @@ public class ServerCommonPacketListenerImplMixin {
     @Unique
     private final Map<Integer, Component> hydraulic$names = new HashMap<>();
 
+    /** Modded effects already announced to this Bedrock player. */
+    @Unique
+    private final Set<Identifier> hydraulic$activeModdedEffects = new HashSet<>();
+
     /**
      * Holds back Polymer's own packets, which describe a world Bedrock is not being shown.
      * <p>
@@ -131,16 +148,13 @@ public class ServerCommonPacketListenerImplMixin {
             cancellable = true
     )
     private void hydraulic$dropPolymerPackets(Packet<?> packet, ChannelFutureListener whenSent, CallbackInfo ci) {
-        if (!HydraulicConfig.get().hidePolymerFromBedrock) {
+        ServerCommonPacketListenerImpl listener = (ServerCommonPacketListenerImpl) (Object) this;
+        if (!hydraulic$isBedrockPlayer(listener)) {
             return;
         }
 
-        if (!((Object) this instanceof ServerGamePacketListenerImpl listener)
-                || !hydraulic$isBedrockPlayer(listener)) {
-            return;
-        }
-
-        if (PolymerFilter.isPolymer(packet)) {
+        if (PolymerFilter.isUnreadableModPayload(packet)
+                || (HydraulicConfig.get().hidePolymerFromBedrock && PolymerFilter.isPolymer(packet))) {
             ci.cancel();
         }
     }
@@ -151,6 +165,18 @@ public class ServerCommonPacketListenerImplMixin {
             argsOnly = true
     )
     private Packet<?> hydraulic$rewriteUnreadablePackets(Packet<?> packet) {
+        if ((Object) this instanceof ServerConfigurationPacketListenerImpl configuration) {
+            if (!hydraulic$isBedrockPlayer(configuration)) {
+                return packet;
+            }
+            if (packet instanceof ClientboundRegistryDataPacket registryPacket) {
+                var safe = RegistryDataSanitizer.sanitize(registryPacket.registry(), registryPacket.entries());
+                return safe == registryPacket.entries() ? packet
+                        : new ClientboundRegistryDataPacket(registryPacket.registry(), safe);
+            }
+            return packet;
+        }
+
         if (!((Object) this instanceof ServerGamePacketListenerImpl listener)
                 || !hydraulic$isBedrockPlayer(listener)) {
             return packet;
@@ -315,17 +341,81 @@ public class ServerCommonPacketListenerImplMixin {
             return hydraulic$filterModdedRecipes(recipePacket);
         }
 
+        if (packet instanceof ClientboundAwardStatsPacket statsPacket) {
+            return hydraulic$filterModdedStats(statsPacket);
+        }
+
+        if (packet instanceof ClientboundMapItemDataPacket mapPacket) {
+            return hydraulic$substituteModdedMapDecorations(mapPacket);
+        }
+
         if (packet instanceof ClientboundUpdateMobEffectPacket effectPacket) {
+            this.hydraulic$announceModdedEffect((ServerGamePacketListenerImpl) (Object) this, effectPacket);
             return hydraulic$substituteModdedEffect(effectPacket);
         }
 
         if (packet instanceof ClientboundRemoveMobEffectPacket removePacket) {
+            this.hydraulic$announceRemovedModdedEffect((ServerGamePacketListenerImpl) (Object) this, removePacket);
             Holder<MobEffect> vanilla = hydraulic$vanillaEffect(removePacket.effect());
             return vanilla == null ? packet
                     : new ClientboundRemoveMobEffectPacket(removePacket.entityId(), vanilla);
         }
 
         return packet;
+    }
+
+    /** Preserves custom map markers as readable vanilla target dots instead of losing the map update. */
+    @Unique
+    private static Packet<?> hydraulic$substituteModdedMapDecorations(
+            @NotNull ClientboundMapItemDataPacket packet) {
+        if (packet.decorations().isEmpty()) {
+            return packet;
+        }
+        boolean[] changed = {false};
+        List<MapDecoration> safe = packet.decorations().get().stream().map(decoration -> {
+            Identifier id = decoration.type().unwrapKey().map(key -> key.identifier()).orElse(null);
+            if (id == null || id.getNamespace().equals(Identifier.DEFAULT_NAMESPACE)) {
+                return decoration;
+            }
+            changed[0] = true;
+            return new MapDecoration(MapDecorationTypes.TARGET_POINT, decoration.x(), decoration.y(),
+                    decoration.rot(), decoration.name());
+        }).toList();
+        return changed[0] ? new ClientboundMapItemDataPacket(packet.mapId(), packet.scale(), packet.locked(),
+                Optional.of(safe), packet.colorPatch()) : packet;
+    }
+
+    /**
+     * Bedrock cannot register a new status-effect icon or shader. Keep the safe vanilla icon, but
+     * announce the real effect name once so the player is not told only that they have "Luck".
+     */
+    @Unique
+    private void hydraulic$announceModdedEffect(@NotNull ServerGamePacketListenerImpl listener,
+                                                @NotNull ClientboundUpdateMobEffectPacket packet) {
+        if (packet.getEntityId() != listener.getPlayer().getId()) {
+            return;
+        }
+        Identifier id = packet.getEffect().unwrapKey().map(key -> key.identifier()).orElse(null);
+        if (id == null || id.getNamespace().equals(Identifier.DEFAULT_NAMESPACE)
+                || !this.hydraulic$activeModdedEffects.add(id)) {
+            return;
+        }
+        listener.send(new ClientboundSetActionBarTextPacket(Component.literal(
+                "Effect: " + ResourceCompatibility.readableName(id.getPath()))));
+    }
+
+    @Unique
+    private void hydraulic$announceRemovedModdedEffect(@NotNull ServerGamePacketListenerImpl listener,
+                                                       @NotNull ClientboundRemoveMobEffectPacket packet) {
+        if (packet.entityId() != listener.getPlayer().getId()) {
+            return;
+        }
+        Identifier id = packet.effect().unwrapKey().map(key -> key.identifier()).orElse(null);
+        if (id == null || !this.hydraulic$activeModdedEffects.remove(id)) {
+            return;
+        }
+        listener.send(new ClientboundSetActionBarTextPacket(Component.literal(
+                "Effect ended: " + ResourceCompatibility.readableName(id.getPath()))));
     }
 
     /**
@@ -443,6 +533,38 @@ public class ServerCommonPacketListenerImplMixin {
 
         hydraulic$LOGGER.debug("Dropped {} recipe(s) with a modded display type", dropped);
         return new ClientboundRecipeBookAddPacket(readable, packet.replace());
+    }
+
+    /**
+     * Removes statistic entries whose type or value is addressed through a modded registry id.
+     * One unreadable entry otherwise makes Geyser lose the complete statistics packet.
+     */
+    @Unique
+    private static Packet<?> hydraulic$filterModdedStats(@NotNull ClientboundAwardStatsPacket packet) {
+        Object2IntMap<Stat<?>> safe = new Object2IntOpenHashMap<>(packet.stats().size());
+        for (Object2IntMap.Entry<Stat<?>> entry : packet.stats().object2IntEntrySet()) {
+            if (hydraulic$isVanillaStat(entry.getKey())) {
+                safe.put(entry.getKey(), entry.getIntValue());
+            }
+        }
+        if (safe.size() == packet.stats().size()) {
+            return packet;
+        }
+        hydraulic$LOGGER.debug("Dropped {} statistic(s) whose registry ids Geyser cannot read",
+                packet.stats().size() - safe.size());
+        return new ClientboundAwardStatsPacket(safe);
+    }
+
+    @Unique
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static boolean hydraulic$isVanillaStat(@NotNull Stat<?> stat) {
+        Identifier type = BuiltInRegistries.STAT_TYPE.getKey(stat.getType());
+        if (type == null || !type.getNamespace().equals(Identifier.DEFAULT_NAMESPACE)) {
+            return false;
+        }
+        net.minecraft.core.Registry registry = stat.getType().getRegistry();
+        Identifier value = registry.getKey(stat.getValue());
+        return value != null && value.getNamespace().equals(Identifier.DEFAULT_NAMESPACE);
     }
 
     /**
@@ -660,8 +782,9 @@ public class ServerCommonPacketListenerImplMixin {
      * their Java UUID and so aren't matched here.
      */
     @Unique
-    private static boolean hydraulic$isBedrockPlayer(ServerGamePacketListenerImpl listener) {
-        return listener.getPlayer().getUUID().getMostSignificantBits() == 0;
+    private static boolean hydraulic$isBedrockPlayer(ServerCommonPacketListenerImpl listener) {
+        java.util.UUID uuid = listener.getOwner().id();
+        return GeyserApi.api().isBedrockPlayer(uuid) || uuid.getMostSignificantBits() == 0;
     }
 
     @Unique

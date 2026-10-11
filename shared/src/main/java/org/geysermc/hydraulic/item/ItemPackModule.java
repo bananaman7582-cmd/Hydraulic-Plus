@@ -17,6 +17,7 @@ import org.geysermc.geyser.api.item.custom.v2.component.geyser.GeyserBlockPlacer
 import org.geysermc.geyser.api.item.custom.v2.component.geyser.GeyserChargeable;
 import org.geysermc.geyser.api.item.custom.v2.component.geyser.GeyserItemDataComponents;
 import org.geysermc.hydraulic.pack.PackLogListener;
+import org.geysermc.hydraulic.pack.AnimatedTextureConverter;
 import org.geysermc.hydraulic.pack.PackModule;
 import org.geysermc.hydraulic.pack.TexturePackModule;
 import org.geysermc.hydraulic.pack.context.PackEventContext;
@@ -181,7 +182,15 @@ public class ItemPackModule extends TexturePackModule<ItemPackModule> {
             // bottle of twenty frames arrives as an unreadable smear rather than as a bottle
             AnimationMeta animation = animated.get(texture);
             if (animation != null) {
-                bedrockPack.addFlipbookTexture(itemLocation.toString(), texturePath, animation.frameTime());
+                Texture animatedTexture = assets.texture(Key.key(texture.namespace(), texture.value() + ".png"));
+                if (animatedTexture != null) {
+                    try {
+                        AnimatedTextureConverter.register(bedrockPack, animatedTexture, animation,
+                                itemLocation.toString(), texturePath);
+                    } catch (Exception exception) {
+                        context.logger().warn("Could not convert animated item texture {}", texture, exception);
+                    }
+                }
             }
         }
     }

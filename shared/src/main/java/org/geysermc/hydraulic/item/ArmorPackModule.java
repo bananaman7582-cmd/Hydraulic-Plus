@@ -30,11 +30,14 @@ import team.unnamed.creative.equipment.EquipmentLayerType;
 import java.io.Reader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.io.IOException;
+import java.util.HashSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 @AutoService(PackModule.class)
 public class ArmorPackModule extends PackModule<ArmorPackModule> {
@@ -46,6 +49,14 @@ public class ArmorPackModule extends PackModule<ArmorPackModule> {
             put("enchanted", "armor_enchanted");
         }
     };
+    private static final Map<String, String> ELYTRA_MATERIALS = Map.of(
+            "default", "elytra",
+            "enchanted", "elytra_glint"
+    );
+    private static final Map<String, String> ELYTRA_ANIMATIONS = Map.of(
+            "default_controller", "controller.animation.elytra.default",
+            "gliding", "animation.elytra.gliding"
+    );
     public ArmorPackModule() {
         this.postProcess(this::postProcess);
     }
@@ -60,7 +71,8 @@ public class ArmorPackModule extends PackModule<ArmorPackModule> {
         for (Item armorItem : armorItems) {
             Equippable equippable = armorItem.components().get(DataComponents.EQUIPPABLE);
 
-            EquipmentLayerType layerType = getEquipmentLayer(equippable.slot());
+            boolean glider = armorItem.components().has(DataComponents.GLIDER);
+            EquipmentLayerType layerType = glider ? EquipmentLayerType.WINGS : getEquipmentLayer(equippable.slot());
             if (layerType == null) {
                 // This might be something else... lets just check
                 Optional<HolderSet<EntityType<?>>> optionalEntityType = equippable.allowedEntities();
@@ -87,18 +99,22 @@ public class ArmorPackModule extends PackModule<ArmorPackModule> {
 
             Identifier armorTextureLocation = equippable.assetId().map(ResourceKey::identifier).orElseThrow(); // Checked above to ensure all armor processed has an asset id, so this shouldn't throw (This instead of get to prevent yellow lines)
 
-            Key layerTexture = resolveLayerTexture(context, armorTextureLocation, layerType);
-            if (layerTexture == null) {
+            ResolvedTexture resolvedTexture = resolveLayerTexture(context, armorTextureLocation, armorItemLocation, layerType);
+            if (resolvedTexture == null) {
                 context.logger().warn("No '{}' equipment layer found for armor item {} (asset {}), skipping",
                         layerType.name().toLowerCase(Locale.ROOT), armorItemLocation, armorTextureLocation);
                 continue;
             }
+            Key layerTexture = resolvedTexture.key();
 
             // Bedrock's vanilla armor geometries and the layer each slot's parent_setup must hide so the
             // client doesn't also draw its own armor layer over ours.
             String geometryType;
             String hiddenLayer;
-            switch (equippable.slot()) {
+            if (glider) {
+                geometryType = "geometry.elytra";
+                hiddenLayer = "chest_layer_visible";
+            } else switch (equippable.slot()) {
                 case HEAD -> { geometryType = "geometry.humanoid.armor.helmet"; hiddenLayer = "helmet_layer_visible"; }
                 case CHEST -> { geometryType = "geometry.humanoid.armor.chestplate"; hiddenLayer = "chest_layer_visible"; }
                 case LEGS -> { geometryType = "geometry.humanoid.armor.leggings"; hiddenLayer = "leg_layer_visible"; }
@@ -113,15 +129,21 @@ public class ArmorPackModule extends PackModule<ArmorPackModule> {
 
             Scripts scripts = new Scripts();
             scripts.parentSetup("variable." + hiddenLayer + " = 0.0;");
+            if (glider) {
+                scripts.animate(List.of(Map.of("default_controller", "1.0")));
+            }
 
             Attachables armorAttachable = new Attachables();
             armorAttachable.formatVersion("1.10.0");
 
             Description description = new Description();
             description.identifier(armorItemLocation.toString());
-            description.materials(ATTACHABLE_MATERIALS);
+            description.materials(glider ? ELYTRA_MATERIALS : ATTACHABLE_MATERIALS);
             description.scripts(scripts);
             description.renderControllers(new String[] { "controller.render.armor" });
+            if (glider) {
+                description.animations(ELYTRA_ANIMATIONS);
+            }
 
             // Deliberately no description.item(...): for armor attachables Bedrock binds purely on the
             // identifier matching the worn item's identifier. The "item" map is a filter used by held
@@ -135,6 +157,12 @@ public class ArmorPackModule extends PackModule<ArmorPackModule> {
                     put("enchanted", "textures/misc/enchanted_actor_glint");
                 }
             });
+
+            if (resolvedTexture.bytes() != null) {
+                String output = String.format(BEDROCK_ARMOR_TEXTURE_LOCATION, layerTexture.namespace(),
+                        finalLayerType.name().toLowerCase(), layerTexture.value()) + ".png";
+                context.bedrockResourcePack().addExtraFile(resolvedTexture.bytes(), output);
+            }
 
             description.geometry(Map.of("default", geometryType));
 
@@ -168,20 +196,21 @@ public class ArmorPackModule extends PackModule<ArmorPackModule> {
      * {@link team.unnamed.creative.ResourcePack#equipment(Key)} empty.
      */
     @Nullable
-    private Key resolveLayerTexture(@NotNull PackPostProcessContext<ArmorPackModule> context,
-                                    @NotNull Identifier assetId, @NotNull EquipmentLayerType layerType) {
+    private ResolvedTexture resolveLayerTexture(@NotNull PackPostProcessContext<ArmorPackModule> context,
+                                                @NotNull Identifier assetId, @NotNull Identifier itemId,
+                                                @NotNull EquipmentLayerType layerType) {
         Equipment equipment = context.javaResourcePack().equipment(Key.key(assetId.toString()));
         if (equipment != null) {
             List<EquipmentLayer> layers = equipment.layers().get(layerType);
             if (layers != null && !layers.isEmpty()) {
-                return layers.getFirst().texture();
+                return new ResolvedTexture(layers.getFirst().texture(), null);
             }
         }
 
         String layerKey = layerType.name().toLowerCase(Locale.ROOT);
         Path file = context.mod().resolveFile("assets/" + assetId.getNamespace() + "/equipment/" + assetId.getPath() + ".json");
         if (file == null) {
-            return null;
+            return legacyLayerTexture(context, assetId, itemId, layerType);
         }
 
         try (Reader reader = Files.newBufferedReader(file)) {
@@ -198,10 +227,57 @@ public class ArmorPackModule extends PackModule<ArmorPackModule> {
             if (!firstLayer.has("texture")) {
                 return null;
             }
-            return Key.key(firstLayer.get("texture").getAsString());
+            return new ResolvedTexture(Key.key(firstLayer.get("texture").getAsString()), null);
         } catch (Exception e) {
             context.logger().warn("Failed to read equipment definition {} for {}: {}", file, assetId, e.getMessage());
+            return legacyLayerTexture(context, assetId, itemId, layerType);
+        }
+    }
+
+    /**
+     * Recovers armour from the pre-equipment-file layout used by older and code-generated mods.
+     */
+    @Nullable
+    private ResolvedTexture legacyLayerTexture(@NotNull PackPostProcessContext<ArmorPackModule> context,
+                                               @NotNull Identifier assetId, @NotNull Identifier itemId,
+                                               @NotNull EquipmentLayerType layerType) {
+        Set<String> names = new HashSet<>();
+        Map<String, Path> files = new HashMap<>();
+        for (Path root : context.mod().roots()) {
+            Path folder = root.resolve("assets").resolve(assetId.getNamespace()).resolve("textures").resolve("armor");
+            if (!Files.isDirectory(folder)) {
+                continue;
+            }
+            try (var stream = Files.walk(folder)) {
+                stream.filter(Files::isRegularFile).filter(path -> path.toString().endsWith(".png")).forEach(path -> {
+                    String name = folder.relativize(path).toString().replace('\\', '/');
+                    name = name.substring(0, name.length() - 4);
+                    names.add(name);
+                    files.putIfAbsent(name, path);
+                });
+            } catch (IOException e) {
+                context.logger().debug("Could not inspect legacy armour textures in {}", folder, e);
+            }
+        }
+
+        boolean leggings = layerType == EquipmentLayerType.HUMANOID_LEGGINGS;
+        String match = EquipmentTextures.matchLegacy(names, assetId.getPath(), itemId.getPath(), leggings);
+        Path file = match == null ? null : files.get(match);
+        if (file == null) {
             return null;
         }
+        try {
+            byte[] bytes = Files.readAllBytes(file);
+            String outputName = "legacy/" + assetId.getPath().replace('/', '_')
+                    + (leggings ? "_leggings" : "_body");
+            context.logger().info("Using legacy armour texture {} for {}", file, itemId);
+            return new ResolvedTexture(Key.key(assetId.getNamespace(), outputName), bytes);
+        } catch (IOException e) {
+            context.logger().warn("Failed to read legacy armour texture {}", file, e);
+            return null;
+        }
+    }
+
+    private record ResolvedTexture(Key key, @Nullable byte[] bytes) {
     }
 }

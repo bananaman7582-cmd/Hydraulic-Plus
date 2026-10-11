@@ -1,15 +1,12 @@
 package org.geysermc.hydraulic.mixin.ext;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonPrimitive;
 import com.google.gson.stream.JsonReader;
 import net.kyori.adventure.key.Key;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.geysermc.hydraulic.util.ResourceCompatibility;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.ModifyArgs;
 import org.spongepowered.asm.mixin.injection.Redirect;
@@ -24,7 +21,6 @@ import team.unnamed.creative.serialize.minecraft.metadata.MetadataSerializer;
 
 import java.io.IOException;
 import java.util.Locale;
-import java.util.Map;
 
 @Mixin(targets = "team.unnamed.creative.serialize.minecraft.MinecraftResourcePackReaderImpl", remap = false)
 public abstract class MinecraftResourcePackReaderImplMixin {
@@ -74,7 +70,7 @@ public abstract class MinecraftResourcePackReaderImplMixin {
             // mostly readable - so try again without the part that cannot be understood before
             // giving up on it entirely
             JsonElement simplified = jsonElement.deepCopy();
-            if (simplifyModdedRendering(simplified)) {
+            if (ResourceCompatibility.simplifyModdedRendering(simplified)) {
                 try {
                     Object recovered = instance.deserializeFromJson(simplified, key, packFormat);
                     LOGGER.debug("Read {} without the parts only its own mod can draw", key);
@@ -88,79 +84,6 @@ public abstract class MinecraftResourcePackReaderImplMixin {
         }
 
         return null;
-    }
-
-    /**
-     * Removes the drawing a mod does in its own code, keeping the part that describes a texture.
-     * <p>
-     * An item may say it is drawn by the mod itself - Alex's Mobs draws its transmutation table that
-     * way - or that its colour comes from the mod. Neither can be read here, and neither can Bedrock
-     * do it, but both are written beside an ordinary model that Bedrock can show:
-     * <pre>
-     * {"type": "minecraft:special", "base": "alexsmobs:item/transmutation_table",
-     *  "model": {"type": "alexsmobs:icon"}}
-     * </pre>
-     * Refusing the whole file over the unreadable half left those items with no texture at all, when
-     * the base model beside it is exactly what should be shown. The colouring is dropped outright,
-     * since it only ever tinted a texture that is still there underneath.
-     *
-     * @param element the parsed file, modified in place
-     * @return whether anything was changed
-     */
-    @Unique
-    private static boolean simplifyModdedRendering(JsonElement element) {
-        boolean changed = false;
-
-        if (element instanceof JsonArray array) {
-            for (JsonElement child : array) {
-                changed |= simplifyModdedRendering(child);
-            }
-            return changed;
-        }
-
-        if (!(element instanceof JsonObject object)) {
-            return false;
-        }
-
-        // Something the mod draws itself, with the model it is drawn over named beside it
-        if (isType(object, "minecraft:special") && object.get("base") instanceof JsonPrimitive base) {
-            object.remove("base");
-            object.remove("model");
-            object.addProperty("type", "minecraft:model");
-            object.add("model", base);
-            return true;
-        }
-
-        // Colours the mod works out as it draws. Bedrock has no equivalent, so the texture is shown
-        // as it is rather than not at all
-        if (object.get("tints") instanceof JsonArray tints && containsModdedType(tints)) {
-            object.remove("tints");
-            changed = true;
-        }
-
-        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-            changed |= simplifyModdedRendering(entry.getValue());
-        }
-
-        return changed;
-    }
-
-    @Unique
-    private static boolean containsModdedType(JsonArray array) {
-        for (JsonElement element : array) {
-            if (element instanceof JsonObject object && object.get("type") instanceof JsonPrimitive type
-                    && type.isString() && !type.getAsString().startsWith("minecraft:")) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    @Unique
-    private static boolean isType(JsonObject object, String type) {
-        return object.get("type") instanceof JsonPrimitive value && value.isString()
-                && value.getAsString().equals(type);
     }
 
     @Redirect(

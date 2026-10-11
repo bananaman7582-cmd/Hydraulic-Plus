@@ -40,6 +40,7 @@ import org.geysermc.geyser.util.MathUtils;
 import org.geysermc.hydraulic.Constants;
 import org.geysermc.hydraulic.HydraulicImpl;
 import org.geysermc.hydraulic.item.CreativeMappings;
+import org.geysermc.hydraulic.pack.AnimatedTextureConverter;
 import org.geysermc.hydraulic.pack.PackLogListener;
 import org.geysermc.hydraulic.pack.PackModule;
 import org.geysermc.hydraulic.pack.context.PackContext;
@@ -233,7 +234,11 @@ public class BlockPackModule extends PackModule<BlockPackModule> {
                 if (texture.hasMetadata()) {
                     AnimationMeta animationMeta = texture.meta().meta(AnimationMeta.class);
                     if (animationMeta != null) {
-                        bedrockPack.addFlipbookTexture(id, outputLoc, animationMeta.frameTime());
+                        try {
+                            AnimatedTextureConverter.register(bedrockPack, texture, animationMeta, id, outputLoc);
+                        } catch (Exception exception) {
+                            context.logger().warn("Could not convert animated block texture {}", key, exception);
+                        }
                     }
                 }
             }

@@ -60,6 +60,32 @@ public class ComponentConverter {
         addSimpleConversion(DataComponents.MAX_DAMAGE, JavaItemDataComponents.MAX_DAMAGE);
         addSimpleConversion(DataComponents.ENCHANTMENT_GLINT_OVERRIDE, JavaItemDataComponents.ENCHANTMENT_GLINT_OVERRIDE);
 
+        addComponentConversion(DataComponents.ATTACK_RANGE, (component, map, definition, options) ->
+                definition.component(JavaItemDataComponents.ATTACK_RANGE, JavaAttackRange.builder()
+                        .minReach(component.minReach())
+                        .maxReach(component.maxReach())
+                        .minCreativeReach(component.minCreativeReach())
+                        .maxCreativeReach(component.maxCreativeReach())
+                        .hitboxMargin(component.hitboxMargin())
+                        .build()));
+        addComponentConversion(DataComponents.SWING_ANIMATION, (component, map, definition, options) ->
+                definition.component(JavaItemDataComponents.SWING_ANIMATION,
+                        JavaSwingAnimation.builder().duration(component.duration()).build()));
+        addComponentConversion(DataComponents.USE_EFFECTS, (component, map, definition, options) ->
+                definition.component(JavaItemDataComponents.USE_EFFECTS,
+                        JavaUseEffects.builder().speedMultiplier(component.speedMultiplier()).build()));
+        addComponentConversion(DataComponents.PIERCING_WEAPON, (component, map, definition, options) ->
+                definition.component(JavaItemDataComponents.PIERCING_WEAPON, JavaPiercingWeapon.instance()));
+        addComponentConversion(DataComponents.KINETIC_WEAPON, (component, map, definition, options) -> {
+            JavaKineticWeapon.Builder kinetic = JavaKineticWeapon.builder().delayTicks(component.delayTicks());
+            component.dismountConditions().ifPresent(condition -> kinetic.dismountConditions(
+                    JavaKineticWeapon.Condition.builder(condition.maxDurationTicks())
+                            .minSpeed(condition.minSpeed())
+                            .minRelativeSpeed(condition.minRelativeSpeed())
+                            .build()));
+            definition.component(JavaItemDataComponents.KINETIC_WEAPON, kinetic.build());
+        });
+
         // These components are a little different or too complex, so we need a more powerful conversion
         addComponentConversion(DataComponents.FOOD, (component, map, definition, options) -> {
             definition.component(
