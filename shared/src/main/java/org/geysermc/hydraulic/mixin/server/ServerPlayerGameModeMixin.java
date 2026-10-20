@@ -9,6 +9,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.BlockHitResult;
 import org.spongepowered.asm.mixin.Mixin;
+import org.geysermc.hydraulic.util.BedrockPlayers;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
@@ -30,7 +31,7 @@ public class ServerPlayerGameModeMixin {
     @Inject(method = "useItemOn", at = @At("RETURN"))
     private void hydraulic$swingOnUse(ServerPlayer player, Level level, ItemStack stack, InteractionHand hand,
                                       BlockHitResult hit, CallbackInfoReturnable<InteractionResult> cir) {
-        if (player.getUUID().getMostSignificantBits() != 0) {
+        if (!BedrockPlayers.isBedrock(player.getUUID())) {
             return; // not a Bedrock player
         }
 

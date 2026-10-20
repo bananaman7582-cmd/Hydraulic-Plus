@@ -57,14 +57,15 @@ public final class RedirectedChestMenu extends AbstractContainerMenu {
 
     @Override
     public void clicked(int slotIndex, int button, ContainerInput input, Player player) {
-        Integer wrappedIndex = redirects.get(slotIndex);
+        // Outside clicks also carry drag-start/end and dropping the carried stack. They are not
+        // unmapped filler slots and must reach the original menu's state machine.
+        Integer wrappedIndex = slotIndex == -999 ? Integer.valueOf(-999) : redirects.get(slotIndex);
         if (wrappedIndex == null) {
             return;
         }
         wrapped.setCarried(getCarried());
         wrapped.clicked(wrappedIndex, button, input, player);
         setCarried(wrapped.getCarried());
-        wrapped.broadcastChanges();
         broadcastChanges();
     }
 
@@ -76,7 +77,6 @@ public final class RedirectedChestMenu extends AbstractContainerMenu {
         }
         ItemStack result = wrapped.quickMoveStack(player, wrappedIndex);
         setCarried(wrapped.getCarried());
-        wrapped.broadcastChanges();
         broadcastChanges();
         return result;
     }
@@ -89,6 +89,13 @@ public final class RedirectedChestMenu extends AbstractContainerMenu {
     @Override
     public boolean stillValid(Player player) {
         return wrapped.stillValid(player);
+    }
+
+    @Override
+    public void broadcastChanges() {
+        // Some machines update their slot contents in their menu's broadcast hook.
+        wrapped.broadcastChanges();
+        super.broadcastChanges();
     }
 
     @Override

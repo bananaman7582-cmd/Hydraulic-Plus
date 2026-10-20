@@ -9,7 +9,8 @@
     "PolyBaseItemMixin",
     "PacketPatcherMixin",
     "PolymerBlockUtilsMixin",
-    "PolymerItemUtilsMixin"
+    "PolymerItemUtilsMixin",
+    "PolymerPatcherMetadataMixin"
   ],
   "injectors": {
     "defaultRequire": 0

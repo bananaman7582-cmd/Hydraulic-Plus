@@ -126,7 +126,7 @@ public final class MurmurNeck {
      * Floodgate gives Bedrock players a UUID whose most significant bits are zero.
      */
     private static boolean isBedrock(@NotNull ServerPlayer player) {
-        return player.getUUID().getMostSignificantBits() == 0;
+        return org.geysermc.hydraulic.util.BedrockPlayers.isBedrock(player.getUUID());
     }
 
     @NotNull

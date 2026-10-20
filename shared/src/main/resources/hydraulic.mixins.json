@@ -12,6 +12,8 @@
     "ext.CustomItemRegistryPopulatorMixin",
     "ext.MinecraftLocaleMixin",
     "ext.ModelSerializerMixin",
+    "ext.RecipeComparatorMixin",
+    "ext.PacketCodecMixin",
     "server.EntityAccessor",
     "server.ItemEntityAccessor",
     "server.PlayerListMixin",

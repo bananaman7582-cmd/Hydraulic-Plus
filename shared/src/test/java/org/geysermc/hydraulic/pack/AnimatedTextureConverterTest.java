@@ -66,6 +66,30 @@ class AnimatedTextureConverterTest {
     }
 
     @Test
+    void defaultDimensionsAlsoSupportHorizontalStrips() throws Exception {
+        BufferedImage source = new BufferedImage(4, 2, BufferedImage.TYPE_INT_ARGB);
+        paint(source, 0, Color.RED);
+        paint(source, 2, Color.BLUE);
+        var result = AnimatedTextureConverter.convert(png(source), AnimationMeta.of(false, -1, -1, 1, List.of()));
+        assertEquals(2, result.frameWidth());
+        assertEquals(2, result.frameHeight());
+        assertEquals(List.of(0, 1), result.frames());
+    }
+
+    @Test
+    void specifyingOnlyOneDimensionMatchesMinecraftInsteadOfAssumingSquares() throws Exception {
+        BufferedImage source = new BufferedImage(4, 4, BufferedImage.TYPE_INT_ARGB);
+        var widthOnly = AnimatedTextureConverter.convert(png(source), AnimationMeta.of(false, 2, -1, 1, List.of()));
+        assertEquals(2, widthOnly.frameWidth());
+        assertEquals(4, widthOnly.frameHeight());
+        assertEquals(List.of(0, 1), widthOnly.frames());
+        var heightOnly = AnimatedTextureConverter.convert(png(source), AnimationMeta.of(false, -1, 2, 1, List.of()));
+        assertEquals(4, heightOnly.frameWidth());
+        assertEquals(2, heightOnly.frameHeight());
+        assertEquals(List.of(0, 1), heightOnly.frames());
+    }
+
+    @Test
     void registersAdvancedBedrockFlipbookFieldsAndConvertedPng(@TempDir Path directory) throws Exception {
         BufferedImage source = new BufferedImage(2, 4, BufferedImage.TYPE_INT_ARGB);
         byte[] sourcePng = png(source);

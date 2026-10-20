@@ -53,7 +53,9 @@ public class PackUtil {
 
     public static UUID getModUUID(Collection<Path> modRoots) {
         final HashingOutputStream hos = new HashingOutputStream(Hashing.murmur3_128(), OutputStream.nullOutputStream());
-        try (Stream<Path> stream = modRoots.parallelStream()) {
+        // Hashing writes to one ordered output stream. A parallel root stream adds common-pool
+        // contention while conversions already run concurrently and cannot parallelise the writes.
+        try (Stream<Path> stream = modRoots.stream()) {
             stream.flatMap(IOUtil.uncheckFunction(Files::walk)).sorted().forEachOrdered(p -> {
                 try {
                     hos.write(p.toString().getBytes(StandardCharsets.UTF_8));

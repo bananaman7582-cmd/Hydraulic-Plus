@@ -4,9 +4,7 @@ import com.mojang.logging.LogUtils;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntityType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -46,8 +44,7 @@ public final class VanillaAncestry {
 
     /**
      * Every vanilla creature by the Java class that implements it. Built once, on the first modded
-     * spawn, because there is no way to ask an {@link EntityType} what class it makes without making
-     * one.
+     * spawn, from the type declarations rather than by constructing temporary entities.
      */
     private static volatile Map<Class<?>, EntityType<?>> vanillaByClass;
 
@@ -79,7 +76,7 @@ public final class VanillaAncestry {
             return null; // not resolvable this time; worth trying again on the next spawn
         }
 
-        EntityType<?> found = ancestorOf(entity.getClass(), server.overworld());
+        EntityType<?> found = ancestorOf(entity.getClass());
         RESOLVED.put(modded, found == null ? modded : found);
 
         if (found != null) {
@@ -94,8 +91,8 @@ public final class VanillaAncestry {
      * Walks up from the mod's class until it reaches one the game itself uses.
      */
     @Nullable
-    private static EntityType<?> ancestorOf(@NotNull Class<?> type, @NotNull ServerLevel level) {
-        Map<Class<?>, EntityType<?>> vanilla = table(level);
+    private static EntityType<?> ancestorOf(@NotNull Class<?> type) {
+        Map<Class<?>, EntityType<?>> vanilla = table();
 
         for (Class<?> current = type; current != null && current != Entity.class; current = current.getSuperclass()) {
             EntityType<?> match = vanilla.get(current);
@@ -110,13 +107,11 @@ public final class VanillaAncestry {
     /**
      * Every vanilla creature paired with the class that implements it.
      * <p>
-     * One of each is built and thrown away, which is the only way to learn what class a type makes.
-     * They are never added to a level, so nothing about the world changes; the same is done on the
-     * client to read modded models. Anything that will not build is skipped rather than fatal - it
-     * costs that one creature as a possible answer, not the whole table.
+     * Reading generic declarations avoids running constructors, mixins and removal hooks for every
+     * vanilla type at the first modded spawn. Types without a concrete declaration are skipped.
      */
     @NotNull
-    private static Map<Class<?>, EntityType<?>> table(@NotNull ServerLevel level) {
+    private static Map<Class<?>, EntityType<?>> table() {
         Map<Class<?>, EntityType<?>> built = vanillaByClass;
         if (built != null) {
             return built;
@@ -134,16 +129,10 @@ public final class VanillaAncestry {
                     continue;
                 }
 
-                try {
-                    Entity sample = type.create(level, EntitySpawnReason.NATURAL);
-                    if (sample != null) {
-                        // The first one wins. Several types share a class - every boat is a Boat -
-                        // and any of them stands in equally well for something built on it
-                        table.putIfAbsent(sample.getClass(), type);
-                        sample.discard();
-                    }
-                } catch (Throwable t) {
-                    // A creature that will not be built outside a world is simply not an answer here
+                Class<? extends Entity> entityClass = VanillaEntityClasses.forType(type);
+                if (entityClass != null) {
+                    // Multiple types (for example boats) share one class; retain registry priority.
+                    table.putIfAbsent(entityClass, type);
                 }
             }
 

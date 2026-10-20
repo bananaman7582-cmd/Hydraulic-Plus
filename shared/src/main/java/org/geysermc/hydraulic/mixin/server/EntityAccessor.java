@@ -17,11 +17,6 @@ import java.util.Optional;
  */
 @Mixin(Entity.class)
 public interface EntityAccessor {
-    @Accessor("DATA_SHARED_FLAGS_ID")
-    static EntityDataAccessor<Byte> hydraulic$dataSharedFlags() {
-        throw new AssertionError();
-    }
-
     @Accessor("DATA_NO_GRAVITY")
     static EntityDataAccessor<Boolean> hydraulic$dataNoGravity() {
         throw new AssertionError();

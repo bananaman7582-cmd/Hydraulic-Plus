@@ -32,7 +32,6 @@ import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import team.unnamed.creative.ResourcePack;
-import team.unnamed.creative.model.Model;
 import team.unnamed.creative.serialize.minecraft.MinecraftResourcePackReader;
 
 import java.io.IOException;
@@ -114,7 +113,7 @@ public class PackManager {
         try {
             Files.createDirectories(this.getVanillaPath().getParent());
         } catch (IOException e) {
-            LOGGER.error("Failed to create cache dir");
+            LOGGER.error("Failed to create cache dir {}", this.getVanillaPath().getParent(), e);
         }
 
         VanillaPackProvider.create(
@@ -177,6 +176,7 @@ public class PackManager {
 
         PackLogListener logListener = new PackLogListener(LoggerFactory.getLogger(LOGGER.getName() + "/" + mod.id()));
 
+        PackPackager packager = new PackPackager();
         PackConverter converter = new PackConverter()
                 .packName(mod.name())
                 .logListener(logListener)
@@ -184,7 +184,7 @@ public class PackManager {
                 .output(packPath)
                 .vanillaPackPath(vanillaPath)
                 .textureSubdirectory(mod.namespace())
-                .packageHandler(new PackPackager());
+                .packageHandler(packager);
 
         converter.postProcessor((javaPack, bedrockPack) -> {
             for (PackModule<?> module : this.modules) {
@@ -214,6 +214,7 @@ public class PackManager {
             converter.pack();
         } catch (IOException ex) {
             LOGGER.error("Failed to export pack for mod {}", mod.id(), ex);
+            return false;
         }
 
         // Said once at the end rather than hidden entirely, so a mod converting badly is still
@@ -223,7 +224,7 @@ public class PackManager {
             LOGGER.info("Held back {} repeated warning(s) while converting {}", suppressed, mod.id());
         }
 
-        return Files.exists(packPath);
+        return packager.packaged();
     }
 
     private void callEvents(@NotNull Event event) {
@@ -335,15 +336,7 @@ public class PackManager {
 
         ResourcePack vanillaResourcePack = MinecraftResourcePackReader.minecraft().readFromZipFile(vanillaPath);
 
-        return key -> {
-            for (final ResourcePack pack : flattenedPacks) {
-                final Model model = pack.model(key);
-                if (model != null) {
-                    return model;
-                }
-            }
-            return vanillaResourcePack.model(key);
-        };
+        return ModelIndex.create(flattenedPacks, vanillaResourcePack);
     }
 
     public ListMultimap<String, ModInfo> getNamespacesToMods() {

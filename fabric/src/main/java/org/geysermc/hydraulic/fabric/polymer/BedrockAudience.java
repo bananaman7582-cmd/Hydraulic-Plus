@@ -4,11 +4,8 @@ import com.mojang.authlib.GameProfile;
 import net.fabricmc.fabric.api.networking.v1.context.PacketContext;
 import net.minecraft.network.Connection;
 import net.minecraft.server.network.ServerCommonPacketListenerImpl;
-import net.minecraft.server.network.ServerGamePacketListenerImpl;
-import org.jetbrains.annotations.NotNull;
+import org.geysermc.hydraulic.util.BedrockPlayers;
 import org.jetbrains.annotations.Nullable;
-
-import java.util.UUID;
 
 /**
  * Tells apart the two audiences a server running both Polymer and Hydraulic is speaking to.
@@ -38,8 +35,7 @@ public final class BedrockAudience {
      * <p>
      * Floodgate gives Bedrock players a UUID whose most significant bits are zero, which is how
      * Floodgate itself identifies them; a player who has linked their Bedrock account to a Java one
-     * keeps their Java UUID and so is not matched here - which is correct, since Geyser sends them
-     * the same way regardless of what their account is linked to.
+     * keeps their Java UUID and is identified through Geyser instead.
      * <p>
      * The connection is asked before the profile is. Both should say the same thing, but the profile
      * is put into the context at one particular moment during login, whereas the connection is there
@@ -53,21 +49,21 @@ public final class BedrockAudience {
      */
     public static boolean isBedrock(@Nullable PacketContext context) {
         if (context == null) {
-            return decide(null, "a packet addressed to nobody");
+            return false;
         }
 
         Connection connection = context.get(PacketContext.CONNECTION);
         if (connection != null
-                && connection.getPacketListener() instanceof ServerGamePacketListenerImpl listener) {
-            return decide(listener.getPlayer().getUUID(), "the connection");
+                && connection.getPacketListener() instanceof ServerCommonPacketListenerImpl listener) {
+            return isBedrock(listener);
         }
 
         GameProfile profile = context.get(PacketContext.GAME_PROFILE);
         if (profile != null) {
-            return decide(profile.id(), "the profile");
+            return BedrockPlayers.isBedrock(profile.id());
         }
 
-        return decide(null, "a context naming neither connection nor profile");
+        return false;
     }
 
     /**
@@ -77,20 +73,7 @@ public final class BedrockAudience {
      * to infer - the player it belongs to is the player being sent to.
      */
     public static boolean isBedrock(@Nullable ServerCommonPacketListenerImpl listener) {
-        if (listener instanceof ServerGamePacketListenerImpl game) {
-            return decide(game.getPlayer().getUUID(), "the listener it was handed");
-        }
-
-        return false;
-    }
-
-    /**
-     * A Floodgate UUID has zero most significant bits, which is how a Bedrock player is told apart.
-     *
-     * @param source which part of the context the id came from, for the sake of the caller reading
-     */
-    private static boolean decide(@Nullable UUID id, @NotNull String source) {
-        return id != null && id.getMostSignificantBits() == 0;
+        return listener != null && BedrockPlayers.isBedrock(listener.getOwner().id());
     }
 
 }

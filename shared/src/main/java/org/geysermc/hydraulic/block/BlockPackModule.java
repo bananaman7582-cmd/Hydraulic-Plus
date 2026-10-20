@@ -33,7 +33,6 @@ import org.geysermc.geyser.api.block.custom.component.GeometryComponent;
 import org.geysermc.geyser.api.block.custom.component.MaterialInstance;
 import org.geysermc.geyser.api.block.custom.component.TransformationComponent;
 import org.geysermc.geyser.api.block.custom.nonvanilla.JavaBlockState;
-import org.geysermc.geyser.api.block.custom.nonvanilla.JavaBoundingBox;
 import org.geysermc.geyser.api.event.lifecycle.GeyserDefineCustomBlocksEvent;
 import org.geysermc.geyser.level.physics.PistonBehavior;
 import org.geysermc.geyser.util.MathUtils;
@@ -78,7 +77,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.function.BiFunction;
 
 @AutoService(PackModule.class)
 public class BlockPackModule extends PackModule<BlockPackModule> {
@@ -109,11 +107,6 @@ public class BlockPackModule extends PackModule<BlockPackModule> {
      * by the client entirely, and a thrown-out block shifts every block after it in the palette.
      */
     private static final String EMPTY_GEOMETRY = "geometry." + Constants.MOD_ID + ".empty";
-
-    /**
-     * The most values Bedrock accepts in a single block state property.
-     */
-    private static final int MAX_PROPERTY_VALUES = 16;
 
     private final Map<String, StateDefinition> blockStates = new HashMap<>();
     private final Set<String> emptyModels = new HashSet<>();
@@ -420,22 +413,6 @@ public class BlockPackModule extends PackModule<BlockPackModule> {
         System.arraycopy(turnedHigh, 0, high, 0, 3);
     }
 
-    /**
-     * The property that puts a block beyond what Bedrock can describe, if it has one.
-     * <p>
-     * Bedrock allows a state property sixteen values; a mod's growth stage or spread counter can run
-     * to a hundred and more. Such a block is left unregistered, and everything written about it has
-     * to agree with that - naming it in {@code blocks.json} while it is absent from the registry
-     * tells the client about a block it does not have.
-     */
-    @Nullable
-    private static Property<?> oversizedProperty(@NotNull Block block) {
-        return block.getStateDefinition().getProperties().stream()
-                .filter(property -> property.getPossibleValues().size() > MAX_PROPERTY_VALUES)
-                .findFirst()
-                .orElse(null);
-    }
-
     private static boolean fitsUnitCube(@NotNull Geometry geometry) {
         if (geometry.bones() == null) {
             return true;
@@ -679,31 +656,15 @@ public class BlockPackModule extends PackModule<BlockPackModule> {
 
             CreativeMappings.setupBlock(block, builder);
 
-            // Bedrock takes at most sixteen values per property, and a block that breaks that rule is
-            // one the client cannot parse. It does not skip just that block: every block registered
-            // after it shifts position in the palette, so the world is drawn with the wrong blocks
-            // entirely - stone comes out as bookshelf and so on. Leaving the block unregistered costs
-            // only that block, which is why it is dropped here rather than passed on and hoped for.
-            Property<?> oversized = oversizedProperty(block);
-            if (oversized != null) {
-                // Dropping the block was worse than the problem. Enderscape's void shale counts its
-                // spread to forty-nine and its blinklight vines their age to twenty-six, and neither
-                // number is anything you can see - but an unregistered block is absent from the
-                // client's registry entirely, so it draws nothing and collides with nothing, which is
-                // felt as being shoved about while walking over ground that is not there.
-                //
-                // The property is left out of what Bedrock is told instead. Every value of it shares
-                // one appearance, which for a counter is no loss at all, and the block exists.
-                context.logger().info("Registering block {} without its {} property: {} values is more "
-                                + "than the {} Bedrock allows, so they share one appearance",
-                        blockLocation, oversized.getName(), oversized.getPossibleValues().size(), MAX_PROPERTY_VALUES);
+            List<Property<?>> properties = BedrockBlockProperties.supported(block.getStateDefinition().getProperties());
+            for (Property<?> property : block.getStateDefinition().getProperties()) {
+                if (!properties.contains(property)) {
+                    context.logger().info("Registering block {} without property {} ({} values); Bedrock allows {}",
+                            blockLocation, property.getName(), property.getPossibleValues().size(), BedrockBlockProperties.MAX_VALUES);
+                }
             }
 
-            for (Property<?> property : block.getStateDefinition().getProperties()) {
-                if (property == oversized) {
-                    continue;
-                }
-
+            for (Property<?> property : properties) {
                 if (property instanceof IntegerProperty intProperty) {
                     builder.intProperty(property.getName(), List.copyOf(intProperty.getPossibleValues()));
                 } else if (property instanceof BooleanProperty) {
@@ -724,6 +685,21 @@ public class BlockPackModule extends PackModule<BlockPackModule> {
             for (BlockState state : block.getStateDefinition().getPossibleStates()) {
                 ModelDefinition definition = getModel(context, blockLocation, state);
                 if (definition == null) {
+                    continue;
+                }
+
+                List<String> conditions = new ArrayList<>();
+                for (Property<?> property : properties) {
+                    String propValue = state.getValue(property).toString();
+                    if (property instanceof EnumProperty<?>) {
+                        propValue = "'" + propValue.toLowerCase(java.util.Locale.ROOT) + "'";
+                    }
+                    conditions.add(String.format(STATE_CONDITION, property.getName(), propValue));
+                }
+                String condition = String.join(" && ", conditions);
+                // Collapsed states share one appearance. Do not rebuild identical geometry and
+                // collision components for every omitted age/spread counter value.
+                if (!conditionsSeen.add(condition)) {
                     continue;
                 }
 
@@ -876,35 +852,12 @@ public class BlockPackModule extends PackModule<BlockPackModule> {
                 // blockstate that can exist. Update the base builder so that
                 // the code that creates the component for the base block
                 // persists everything we did above
-                if (state.getProperties().isEmpty()) {
+                if (properties.isEmpty()) {
                     baseComponentBuilder = componentsBuilder;
                     // Missing/vanilla models use the empty geometry and deliberately receive no
                     // transformation. Keep their base collision boxes unrotated as well; otherwise
                     // this later base-component pass would undo a rotation Bedrock never applies.
                     baseRotation = rotated ? definition.variant().y() : 0;
-                    continue;
-                }
-
-                List<String> conditions = new ArrayList<>();
-                for (Property<?> property : state.getProperties()) {
-                    // Bedrock was not told about this one, so it cannot be asked about either
-                    if (property == oversized) {
-                        continue;
-                    }
-
-                    String propValue = state.getValue(property).toString();
-                    if (property instanceof EnumProperty<?>) {
-                        propValue = "'" + propValue.toLowerCase() + "'";
-                    }
-
-                    conditions.add(String.format(STATE_CONDITION, property.getName(), propValue));
-                }
-
-                String condition = String.join(" && ", conditions);
-
-                // With a property left out, every state that differed only by it now says the same
-                // thing, and Bedrock would be handed the same permutation forty-nine times over
-                if (!conditionsSeen.add(condition)) {
                     continue;
                 }
 
@@ -956,15 +909,7 @@ public class BlockPackModule extends PackModule<BlockPackModule> {
             int blockId = registry.getId(block);
             for (BlockState state : block.getStateDefinition().getPossibleStates()) {
                 CustomBlockState.Builder stateBuilder = blockData.blockStateBuilder();
-                for (Property<?> property : state.getProperties()) {
-                    // This property was deliberately omitted from the Bedrock block definition
-                    // above because Bedrock accepts at most sixteen values. Adding it back to the
-                    // state here makes Geyser reject the state with "Unknown property", aborting
-                    // the registry event partway through and shifting every later palette entry.
-                    if (property == oversized) {
-                        continue;
-                    }
-
+                for (Property<?> property : properties) {
                     if (property instanceof IntegerProperty intProperty) {
                         stateBuilder.intProperty(property.getName(), state.getValue(intProperty));
                     } else if (property instanceof BooleanProperty booleanProperty) {
@@ -1006,17 +951,13 @@ public class BlockPackModule extends PackModule<BlockPackModule> {
                     context.logger().warn("Failed to get pick item for block {}: {}", blockLocation, e.getMessage());
                 }
 
-                /*
-                List<AABB> aabbs = collisionShape.toAabbs();
-                JavaBoundingBox[] bbs = new JavaBoundingBox[aabbs.size()];
-                for (int i = 0; i < aabbs.size(); i++) {
-                    AABB aabb = aabbs.get(i);
-                    bbs[i] = new JavaBoundingBox(aabb.minX, aabb.minY, aabb.minZ, aabb.maxX, aabb.maxY, aabb.maxZ);
+                VoxelShape stateCollision = collisionShape;
+                try {
+                    stateCollision = state.getCollisionShape(new SingletonBlockGetter(state), BlockPos.ZERO);
+                } catch (RuntimeException exception) {
+                    context.logger().debug("Using default collision for context-dependent block state {}", state, exception);
                 }
-
-                javaBlockStateBuilder.collision(bbs);
-                 */
-                javaBlockStateBuilder.collision(new JavaBoundingBox[0]); // TODO
+                javaBlockStateBuilder.collision(BlockCollision.boxes(stateCollision));
 
                 event.registerOverride(javaBlockStateBuilder.build(), customBlockState);
             }
@@ -1050,49 +991,7 @@ public class BlockPackModule extends PackModule<BlockPackModule> {
                     continue;
                 }
 
-                List<Condition> conditions = new ArrayList<>();
-                BiFunction<Boolean, Boolean, Boolean> comparator = (a, b) -> false;
-                if (selector.condition() instanceof Condition.And andCondition) {
-                    conditions.addAll(andCondition.conditions());
-                    comparator = Boolean::logicalAnd;
-                } else if (selector.condition() instanceof Condition.Or orCondition) {
-                    conditions.addAll(orCondition.conditions());
-                    comparator = Boolean::logicalOr;
-                } else if (selector.condition() instanceof Condition.Match) {
-                    conditions.add(selector.condition());
-                }
-
-                boolean first = true;
-                boolean result = true;
-                for (Condition condition : conditions) {
-                    if (!(condition instanceof Condition.Match match)) {
-                        context.logger().warn("Non match condition found in {}", blockLocation);
-                        continue;
-                    }
-
-                    Property<?> foundProperty = null;
-                    for (Property<?> property : state.getProperties()) {
-                        if (property.getName().equals(match.key())) {
-                            foundProperty = property;
-                            break;
-                        }
-                    }
-
-                    if (foundProperty == null) {
-                        result = false;
-                        continue;
-                    }
-
-                    boolean test = state.getValue(foundProperty).toString().equals(match.value().toString());
-                    if (!first) {
-                        result = comparator.apply(result, test);
-                    } else {
-                        result = test;
-                        first = false;
-                    }
-                }
-
-                if (result) {
+                if (BlockStateConditions.matches(selector.condition(), state)) {
                     multiVariant = selector.variant();
                     break;
                 }
@@ -1129,7 +1028,7 @@ public class BlockPackModule extends PackModule<BlockPackModule> {
     private static MultiVariant matchState(@NotNull BlockState state, @NotNull Map<String, MultiVariant> variants) {
         List<String> properties = new ArrayList<>();
         for (Property<?> property : state.getProperties()) {
-            properties.add(property.getName() + "=" + state.getValue(property).toString().toLowerCase());
+            properties.add(property.getName() + "=" + BlockStateConditions.value(state, property));
         }
 
         for (Map.Entry<String, MultiVariant> entry : variants.entrySet()) {

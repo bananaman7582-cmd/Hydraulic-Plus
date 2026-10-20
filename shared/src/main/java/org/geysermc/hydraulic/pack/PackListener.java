@@ -1,7 +1,6 @@
 package org.geysermc.hydraulic.pack;
 
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
-import com.google.gson.Gson;
 import com.mojang.logging.LogUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import org.geysermc.event.PostOrder;
@@ -17,71 +16,63 @@ import org.geysermc.hydraulic.platform.mod.ModInfo;
 import org.geysermc.hydraulic.storage.ModStorage;
 import org.geysermc.hydraulic.util.FormatUtil;
 import org.geysermc.hydraulic.util.PackUtil;
-import org.geysermc.pack.bedrock.resource.Manifest;
 import org.slf4j.Logger;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.stream.Stream;
 import java.util.concurrent.Executors;
-import java.util.zip.ZipFile;
 
 /**
  * Listens for events related to packs.
  */
 public class PackListener {
     private static final Logger LOGGER = LogUtils.getLogger();
-    private static final Gson GSON = new Gson();
-    private static final ExecutorService THREAD_POOL;
+    private final ExecutorService executor;
 
     private final HydraulicImpl hydraulic;
     private final PackManager manager;
-
-    static {
-        // Each conversion holds an unpacked Java pack and a Bedrock pack in memory at the same time.
-        // Running one task per CPU core therefore makes large modpacks consume several copies of
-        // their biggest assets concurrently; on a twelve-core server this was enough to exceed the
-        // configured memory limit. Four workers retain useful parallelism while bounding that peak.
-        THREAD_POOL = Executors.newFixedThreadPool(
-            Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors() / 2)),
-            new ThreadFactoryBuilder()
-                .setNameFormat(Constants.MOD_NAME + " Conversion Thread #%d")
-                .setUncaughtExceptionHandler((thread, throwable) -> LOGGER.error("Uncaught exception in thread {}", thread.getName(), throwable))
-                .build()
-        );
-    }
 
     public PackListener(HydraulicImpl hydraulic, PackManager manager) {
         this.hydraulic = hydraulic;
         this.manager = manager;
 
+        Runtime runtime = Runtime.getRuntime();
+        int workers = ConversionWorkers.count(runtime.availableProcessors(), runtime.maxMemory());
+        LOGGER.info("Using {} resource-pack conversion worker(s)", workers);
+        this.executor = Executors.newFixedThreadPool(workers,
+            new ThreadFactoryBuilder()
+                .setNameFormat(Constants.MOD_NAME + " Conversion Thread #%d")
+                .setUncaughtExceptionHandler((thread, throwable) -> LOGGER.error("Uncaught exception in thread {}", thread.getName(), throwable))
+                .build()
+        );
         hydraulic.registerServerStop(server -> {
-            THREAD_POOL.shutdown(); // Prevents the server from locking up on stop
+            this.executor.shutdown();
         });
     }
 
     @Subscribe(postOrder = PostOrder.LATE)
     public void onLoadResourcePacks(GeyserDefineResourcePacksEvent event) {
+        long newestGeometry = this.newestEntityGeometry();
         // Check if hydraulic has updated since the last pack conversion
         // This is so we can regenerate packs on update in case the pack generation logic has changed
         ModInfo hydraulicMod = this.hydraulic.mod(Constants.MOD_ID);
-        boolean hydraulicUpdated = checkNeedsConversion(hydraulicMod, this.hydraulic.modStorage(hydraulicMod).pack());
+        boolean hydraulicUpdated = checkNeedsConversion(hydraulicMod,
+                this.hydraulic.modStorage(hydraulicMod).pack(), newestGeometry);
 
         if (hydraulicUpdated) {
             LOGGER.info("Hydraulic has updated since the last pack conversion, regenerating all packs!");
         }
 
         // Go over all mods and load the pack or mark them for conversion
-        Map<String, Pair<ModInfo, Path>> packsToLoad = new HashMap<>();
+        Map<String, Pair<ModInfo, Path>> packsToLoad = new LinkedHashMap<>();
+        Map<String, CompletableFuture<Path>> results = new LinkedHashMap<>();
         for (ModInfo mod : this.hydraulic.mods()) {
             if (PackManager.IGNORED_MODS.contains(mod.id())) {
                 continue;
@@ -95,41 +86,49 @@ public class PackListener {
             ModStorage storage = this.hydraulic.modStorage(mod);
 
             Path packPath = storage.pack();
-            if (this.hydraulic.isDev() || hydraulicUpdated || checkNeedsConversion(mod, packPath)) {
+            if (this.hydraulic.isDev() || hydraulicUpdated || checkNeedsConversion(mod, packPath, newestGeometry)) {
                 packsToLoad.put(mod.id(), Pair.of(mod, packPath));
+                results.put(mod.id(), CompletableFuture.completedFuture(null));
             } else {
                 // We don't need to convert the pack, just register it
                 LOGGER.info("Registering already converted pack for mod {}", mod.id());
-                event.register(ResourcePack.create(PackCodec.path(packPath)), PriorityOption.NORMAL);
+                results.put(mod.id(), CompletableFuture.completedFuture(packPath));
             }
         }
 
-        if (packsToLoad.isEmpty()) {
-            return;
-        }
-
-        LOGGER.info("Found {} packs to convert!", packsToLoad.size());
+        LOGGER.info("Found {} packs to convert", packsToLoad.size());
 
         long start = System.currentTimeMillis();
 
-        List<CompletableFuture<Void>> futures = new ArrayList<>();
         for (var entry : packsToLoad.entrySet()) {
-            futures.add(CompletableFuture.runAsync(() -> {
+            results.put(entry.getKey(), CompletableFuture.supplyAsync(() -> {
                 LOGGER.info("Converting pack for mod {}", entry.getKey());
                 try {
                     if (this.manager.createPack(entry.getValue().getLeft(), entry.getValue().getRight())) {
-                        event.register(ResourcePack.create(PackCodec.path(entry.getValue().getRight())), PriorityOption.NORMAL);
+                        return entry.getValue().getRight();
                     }
                 } catch (Throwable t) {
                     LOGGER.error("Failed to convert pack for mod {}", entry.getKey(), t);
                 }
-            }, THREAD_POOL));
+                return null;
+            }, this.executor));
         }
 
-        // Wait for all futures to complete
-        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        int converted = 0;
+        // Only the event's owning thread registers packs; worker completion order must not determine
+        // pack priority, and the event API need not support concurrent mutations.
+        for (var entry : results.entrySet()) {
+            Path pack = entry.getValue().join();
+            if (pack != null) {
+                event.register(ResourcePack.create(PackCodec.path(pack)), PriorityOption.NORMAL);
+                if (packsToLoad.containsKey(entry.getKey())) {
+                    converted++;
+                }
+            }
+        }
 
-        LOGGER.info("Converted {} packs for mods in {}", packsToLoad.size(), FormatUtil.humanReadableFormat(System.currentTimeMillis() - start));
+        LOGGER.info("Converted {} of {} packs for mods in {}", converted, packsToLoad.size(),
+                FormatUtil.humanReadableFormat(System.currentTimeMillis() - start));
     }
 
     /**
@@ -140,25 +139,11 @@ public class PackListener {
      * @param packPath The path to the pack.
      * @return {@code true} if the pack needs to be converted.
      */
-    private boolean checkNeedsConversion(ModInfo mod, Path packPath) {
-        // Read the uuid from the pack manifest
-        String packUUID;
-        try (
-            ZipFile zip = new ZipFile(packPath.toFile());
-            InputStream inputStream = zip.getInputStream(zip.getEntry("manifest.json"));
-            InputStreamReader inputStreamReader = new InputStreamReader(inputStream)
-        ) {
-            packUUID = GSON.fromJson(inputStreamReader, Manifest.class).header().uuid();
-        } catch (IOException e) {
+    private boolean checkNeedsConversion(ModInfo mod, Path packPath, long newestGeometry) {
+        if (!Files.isRegularFile(packPath) || !PackCache.matches(packPath, PackUtil.getModUUID(mod.roots()))) {
             return true;
         }
-
-        String modUUID = PackUtil.getModUUID(mod.roots()).toString();
-        if (!modUUID.equals(packUUID)) {
-            return true;
-        }
-
-        return hasNewerEntityGeometry(packPath);
+        return isNewerThan(packPath, newestGeometry);
     }
 
     /**
@@ -170,17 +155,10 @@ public class PackListener {
      * the mobs stay invisible no matter how many times it is restarted - with nothing in the log to
      * explain it, because the conversion that would have complained never ran.
      *
-     * @param packPath the pack being considered
-     * @return whether any model is newer than the pack
+     * Scan once per load event instead of once for every cached mod pack.
      */
-    private boolean hasNewerEntityGeometry(Path packPath) {
-        long packTime;
-        try {
-            packTime = Files.getLastModifiedTime(packPath).toMillis();
-        } catch (IOException e) {
-            return true;
-        }
-
+    private long newestEntityGeometry() {
+        long newest = Long.MIN_VALUE;
         for (Path folder : List.of(
                 this.hydraulic.dataFolder(Constants.MOD_ID).resolve("entity-geometry"),
                 EntityGeometryDump.directory()
@@ -190,22 +168,23 @@ public class PackListener {
             }
 
             try (Stream<Path> files = Files.list(folder)) {
-                if (files.anyMatch(file -> isNewerThan(file, packTime))) {
-                    return true;
+                for (Path file : files.toList()) {
+                    newest = Math.max(newest, Files.getLastModifiedTime(file).toMillis());
                 }
             } catch (IOException e) {
-                // A folder we cannot read tells us nothing, so leave the pack alone
+                LOGGER.warn("Cannot inspect entity geometry in {}; cached packs will be refreshed", folder, e);
+                return Long.MAX_VALUE;
             }
         }
 
-        return false;
+        return newest;
     }
 
-    private static boolean isNewerThan(Path file, long time) {
+    private static boolean isNewerThan(Path file, long newestGeometry) {
         try {
-            return Files.getLastModifiedTime(file).toMillis() > time;
+            return newestGeometry > Files.getLastModifiedTime(file).toMillis();
         } catch (IOException e) {
-            return false;
+            return true;
         }
     }
 }

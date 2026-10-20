@@ -68,6 +68,11 @@ public class PolymerMixinPlugin implements IMixinConfigPlugin {
 
     @Override
     public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
+        if (mixinClassName.endsWith(".PolymerPatcherMetadataMixin")) {
+            // Hydraulic always normalises Bedrock metadata, even when Java-style Polymer mappings
+            // are opted into. The encoding-time Patcher pass must not apply that shift again.
+            return FabricLoader.getInstance().isModLoaded("polymer-patcher");
+        }
         return this.apply;
     }
 

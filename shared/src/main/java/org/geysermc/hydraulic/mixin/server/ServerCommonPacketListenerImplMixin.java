@@ -1,6 +1,8 @@
 package org.geysermc.hydraulic.mixin.server;
 
 import com.mojang.logging.LogUtils;
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import io.netty.channel.ChannelFutureListener;
 import it.unimi.dsi.fastutil.objects.Object2IntMap;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
@@ -14,7 +16,6 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.configuration.ClientboundRegistryDataPacket;
-import net.minecraft.network.protocol.game.ClientGamePacketListener;
 import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundAwardStatsPacket;
 import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket;
@@ -28,15 +29,19 @@ import net.minecraft.network.protocol.game.ClientboundRemoveMobEffectPacket;
 import net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket;
 import net.minecraft.network.protocol.game.ClientboundSetActionBarTextPacket;
 import net.minecraft.network.protocol.game.ClientboundSoundPacket;
+import net.minecraft.network.protocol.game.ClientboundSoundEntityPacket;
+import net.minecraft.network.protocol.game.ClientboundForgetLevelChunkPacket;
+import net.minecraft.network.protocol.game.ClientboundRespawnPacket;
+import net.minecraft.network.protocol.game.ClientboundSectionBlocksUpdatePacket;
 import net.minecraft.network.protocol.game.ClientboundUpdateAttributesPacket;
 import net.minecraft.network.protocol.game.ClientboundUpdateMobEffectPacket;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.resources.Identifier;
-import net.minecraft.sounds.SoundEvent;
 import net.minecraft.server.network.ServerCommonPacketListenerImpl;
 import net.minecraft.server.network.ServerConfigurationPacketListenerImpl;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.entity.ai.attributes.Attribute;
@@ -45,12 +50,6 @@ import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.item.crafting.display.RecipeDisplay;
-import net.minecraft.world.item.crafting.display.FurnaceRecipeDisplay;
-import net.minecraft.world.item.crafting.display.ShapedCraftingRecipeDisplay;
-import net.minecraft.world.item.crafting.display.ShapelessCraftingRecipeDisplay;
-import net.minecraft.world.item.crafting.display.SlotDisplay;
-import net.minecraft.world.item.crafting.display.SmithingRecipeDisplay;
-import net.minecraft.world.item.crafting.display.StonecutterRecipeDisplay;
 import net.minecraft.world.level.saveddata.maps.MapDecoration;
 import net.minecraft.world.level.saveddata.maps.MapDecorationTypes;
 import net.minecraft.world.phys.shapes.VoxelShape;
@@ -61,18 +60,19 @@ import org.geysermc.hydraulic.config.PolymerFilter;
 import org.geysermc.hydraulic.HydraulicImpl;
 import org.geysermc.hydraulic.entity.MissingEntityModels;
 import org.geysermc.hydraulic.entity.VanillaAncestry;
+import org.geysermc.hydraulic.entity.VanillaEntityClasses;
+import org.geysermc.hydraulic.entity.VanillaEntityMetadata;
+import org.geysermc.hydraulic.util.BedrockSounds;
 import org.geysermc.hydraulic.util.ResourceCompatibility;
 import org.geysermc.hydraulic.util.RegistryDataSanitizer;
-import org.geysermc.geyser.api.GeyserApi;
+import org.geysermc.hydraulic.util.BedrockPlayers;
+import org.geysermc.hydraulic.util.PacketBundles;
+import org.geysermc.hydraulic.util.BedrockPacketSafety;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
-import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.ModifyVariable;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -107,13 +107,6 @@ public class ServerCommonPacketListenerImplMixin {
     private static final Set<Identifier> hydraulic$REPORTED_ENTITIES = new HashSet<>();
 
     /**
-     * Where a mob keeps whether it is burning, sneaking, glowing or invisible. It is the first field
-     * every entity has, which is what makes it safe to pass on when the rest cannot be.
-     */
-    @Unique
-    private static final int hydraulic$SHARED_FLAGS = 0;
-
-    /**
      * The items being shown on blocks to this one player. Held per connection, so it is forgotten
      * when they leave without anything having to remember to clean up.
      */
@@ -138,39 +131,35 @@ public class ServerCommonPacketListenerImplMixin {
     @Unique
     private final Map<Integer, Component> hydraulic$names = new HashMap<>();
 
+    @Unique
+    private final Map<Integer, Class<? extends Entity>> hydraulic$metadataTypes = new HashMap<>();
+
     /** Modded effects already announced to this Bedrock player. */
     @Unique
     private final Set<Identifier> hydraulic$activeModdedEffects = new HashSet<>();
 
-    /**
-     * Holds back Polymer's own packets, which describe a world Bedrock is not being shown.
-     * <p>
-     * Separate from the rewriting below because this stops a packet rather than changing it, and the
-     * two cannot be done in the same place.
-     */
-    @Inject(
-            method = "send(Lnet/minecraft/network/protocol/Packet;Lio/netty/channel/ChannelFutureListener;)V",
-            at = @At("HEAD"),
-            cancellable = true
-    )
-    private void hydraulic$dropPolymerPackets(Packet<?> packet, ChannelFutureListener whenSent, CallbackInfo ci) {
+    /** Applies the same rejection and rewriting to standalone packets and bundled packets. */
+    @WrapMethod(method = "send(Lnet/minecraft/network/protocol/Packet;Lio/netty/channel/ChannelFutureListener;)V")
+    private void hydraulic$sendReadablePacket(Packet<?> packet, ChannelFutureListener whenSent,
+                                              Operation<Void> original) {
         ServerCommonPacketListenerImpl listener = (ServerCommonPacketListenerImpl) (Object) this;
         if (!hydraulic$isBedrockPlayer(listener)) {
+            original.call(packet, whenSent);
             return;
         }
-
-        if (PolymerFilter.isUnreadableModPayload(packet)
-                || (HydraulicConfig.get().hidePolymerFromBedrock && PolymerFilter.isPolymer(packet))) {
-            ci.cancel();
+        Packet<?> readable = this.hydraulic$rewriteUnreadablePackets(packet);
+        if (readable != null) {
+            original.call(readable, whenSent);
         }
     }
 
-    @ModifyVariable(
-            method = "send(Lnet/minecraft/network/protocol/Packet;Lio/netty/channel/ChannelFutureListener;)V",
-            at = @At("HEAD"),
-            argsOnly = true
-    )
+    @Unique
+    @Nullable
     private Packet<?> hydraulic$rewriteUnreadablePackets(Packet<?> packet) {
+        if (BedrockPacketSafety.shouldDrop(packet)
+                || (HydraulicConfig.get().hidePolymerFromBedrock && PolymerFilter.isPolymer(packet))) {
+            return null;
+        }
         if ((Object) this instanceof ServerConfigurationPacketListenerImpl configuration) {
             if (!hydraulic$isBedrockPlayer(configuration)) {
                 return packet;
@@ -188,6 +177,11 @@ public class ServerCommonPacketListenerImplMixin {
             return packet;
         }
 
+        return this.hydraulic$rewrite(packet);
+    }
+
+    @Unique
+    private void hydraulic$updateDisplayedItems(Packet<?> packet, ServerGamePacketListenerImpl listener) {
         // A block describing itself may be describing an item it is holding, which Bedrock has no way
         // to draw as part of a block. The packet is passed along untouched either way; what it says
         // is only used to decide whether to put an item there as well
@@ -207,37 +201,18 @@ public class ServerCommonPacketListenerImplMixin {
         // would hang in the air over the empty space
         if (packet instanceof ClientboundBlockUpdatePacket update) {
             this.hydraulic$itemDisplay.forget(update.getPos(), listener::send);
+        } else if (packet instanceof ClientboundSectionBlocksUpdatePacket updates) {
+            updates.runUpdates((position, state) -> this.hydraulic$itemDisplay.forget(position, listener::send));
+        } else if (packet instanceof ClientboundForgetLevelChunkPacket forgotten) {
+            this.hydraulic$itemDisplay.forgetChunk(forgotten.pos().x(), forgotten.pos().z(), listener::send);
+        } else if (packet instanceof ClientboundRespawnPacket) {
+            this.hydraulic$itemDisplay.clear(listener::send);
+            this.hydraulic$metadataTypes.clear();
+            this.hydraulic$substituted.clear();
+            this.hydraulic$names.clear();
+            this.hydraulic$activeModdedEffects.clear();
         }
 
-        return this.hydraulic$rewrite(packet);
-    }
-
-    /**
-     * The part of a mob's metadata that means the same thing whatever the mob is.
-     * <p>
-     * Dropping all of it was the safe thing to do and cost more than it looked. Metadata is a list of
-     * numbered fields, and the numbering runs from the general to the particular: every entity in the
-     * game, modded or not, keeps the same handful at the front, and a mod's own fields are added after
-     * those. Only the tail is unreadable against a borrowed type - the head is as true of a modded
-     * bear as of a pig.
-     * <p>
-     * The first of those fields is the one carrying whether the mob is burning, sneaking, glowing or
-     * invisible, so throwing it away meant a modded mob standing in a fire looked entirely comfortable
-     * doing it.
-     */
-    @Unique
-    @NotNull
-    private static List<SynchedEntityData.DataValue<?>> hydraulic$universalData(
-            @NotNull ClientboundSetEntityDataPacket packet) {
-        List<SynchedEntityData.DataValue<?>> kept = new ArrayList<>();
-
-        for (SynchedEntityData.DataValue<?> value : packet.packedItems()) {
-            if (value.id() == hydraulic$SHARED_FLAGS) {
-                kept.add(value);
-            }
-        }
-
-        return kept;
     }
 
     /**
@@ -273,28 +248,27 @@ public class ServerCommonPacketListenerImplMixin {
      * Picks the right rewrite for a packet, looking inside bundles for more.
      */
     @Unique
+    @Nullable
     private Packet<?> hydraulic$rewrite(@NotNull Packet<?> packet) {
         if (packet instanceof ClientboundBundlePacket bundle) {
-            return this.hydraulic$rewriteBundle(bundle);
+            return PacketBundles.rewrite(bundle, this::hydraulic$rewrite);
         }
+        if (BedrockPacketSafety.shouldDrop(packet)
+                || (HydraulicConfig.get().hidePolymerFromBedrock && PolymerFilter.isPolymer(packet))) {
+            return null;
+        }
+        this.hydraulic$updateDisplayedItems(packet, (ServerGamePacketListenerImpl) (Object) this);
 
         if (packet instanceof ClientboundSoundPacket soundPacket) {
-            return hydraulic$inlineModdedSound(soundPacket);
+            return BedrockSounds.inline(soundPacket);
         }
-
-        // Some server-side compatibility mods emit an entity-data packet even when there is no
-        // dirty data to put in it. Minecraft's 26.2 encoder then writes no end marker, leaving a
-        // four-byte packet which Geyser repeatedly tries to read a fifth byte from. This is not
-        // limited to Hydraulic's substituted entities (Polymer block displays can do it too), so
-        // make every empty metadata packet structurally complete for Bedrock recipients.
-        if (packet instanceof ClientboundSetEntityDataPacket data && data.packedItems().isEmpty()) {
-            return this.hydraulic$metadataWithCurrentFlags(data.id());
+        if (packet instanceof ClientboundSoundEntityPacket soundPacket) {
+            return BedrockSounds.inline(soundPacket);
         }
 
         // A spawn and the metadata describing it travel together in one bundle, so both of these have
         // to be seen from in here rather than from the outside
-        if (packet instanceof ClientboundSetEntityDataPacket data
-                && this.hydraulic$substituted.contains(data.id())) {
+        if (packet instanceof ClientboundSetEntityDataPacket data) {
             // Metadata for an entity whose type was swapped describes something the client is not
             // being shown, and cannot be read against the type it was sent as. Dropping it costs the
             // mob its finer details - whether it is a baby, which variant - and saves everything else.
@@ -303,38 +277,41 @@ public class ServerCommonPacketListenerImplMixin {
             // detail, and without a label there is nothing at all to say which modded creature it is
             // meant to be - every one of them reads as a stray zombie. Saying so is the difference
             // between a mob that looks wrong and a mob nobody can identify
-            List<SynchedEntityData.DataValue<?>> kept = new ArrayList<>(hydraulic$universalData(data));
-
-            // An empty metadata packet has no terminating entry on the wire in 26.2. Geyser then
-            // attempts to read a fifth byte from a four-byte packet and reports a downstream packet
-            // error. Preserve the entity's current universal flags when the modded-only update left
-            // us with nothing else to send.
-            if (kept.isEmpty()) {
-                kept.add(this.hydraulic$currentFlags(data.id()));
+            boolean substituted = this.hydraulic$substituted.contains(data.id());
+            List<SynchedEntityData.DataValue<?>> values = data.packedItems();
+            Component name = substituted ? this.hydraulic$names.get(data.id()) : null;
+            if (name != null) {
+                values = new ArrayList<>(values);
+                values.removeIf(value -> value.id() == EntityAccessor.hydraulic$dataCustomName().id()
+                        || value.id() == EntityAccessor.hydraulic$dataCustomNameVisible().id());
+                values.add(SynchedEntityData.DataValue.create(EntityAccessor.hydraulic$dataCustomName(), Optional.of(name)));
+                values.add(SynchedEntityData.DataValue.create(EntityAccessor.hydraulic$dataCustomNameVisible(), true));
             }
-
-            Component name = this.hydraulic$names.get(data.id());
-            if (name == null) {
-                return new ClientboundSetEntityDataPacket(data.id(), kept);
+            Class<? extends Entity> type = substituted ? Entity.class : this.hydraulic$metadataTypes.get(data.id());
+            if (type == null) {
+                Entity entity = ((ServerGamePacketListenerImpl) (Object) this).getPlayer().level().getEntity(data.id());
+                type = entity == null ? Entity.class : entity.getClass();
             }
-
-            kept.add(SynchedEntityData.DataValue.create(EntityAccessor.hydraulic$dataCustomName(),
-                    Optional.of(name)));
-            kept.add(SynchedEntityData.DataValue.create(EntityAccessor.hydraulic$dataCustomNameVisible(),
-                    true));
-
-            return new ClientboundSetEntityDataPacket(data.id(), kept);
+            var safe = VanillaEntityMetadata.sanitize(type, values);
+            return safe == data.packedItems() ? packet : new ClientboundSetEntityDataPacket(data.id(), safe);
         }
 
         if (packet instanceof ClientboundRemoveEntitiesPacket removed) {
             removed.getEntityIds().forEach(id -> {
                 this.hydraulic$substituted.remove(id);
                 this.hydraulic$names.remove(id);
+                this.hydraulic$metadataTypes.remove(id);
             });
             return packet;
         }
 
         if (packet instanceof ClientboundAddEntityPacket addEntityPacket) {
+            Entity entity = ((ServerGamePacketListenerImpl) (Object) this).getPlayer().level().getEntity(addEntityPacket.getId());
+            Class<? extends Entity> metadataClass = entity == null
+                    ? VanillaEntityClasses.forType(addEntityPacket.getType()) : entity.getClass();
+            if (metadataClass != null) {
+                this.hydraulic$metadataTypes.put(addEntityPacket.getId(), metadataClass);
+            }
             if (hydraulic$isModded(addEntityPacket.getType())) {
                 this.hydraulic$substituted.add(addEntityPacket.getId());
 
@@ -385,19 +362,6 @@ public class ServerCommonPacketListenerImplMixin {
         }
 
         return packet;
-    }
-
-    @Unique
-    private ClientboundSetEntityDataPacket hydraulic$metadataWithCurrentFlags(int entityId) {
-        return new ClientboundSetEntityDataPacket(entityId, List.of(this.hydraulic$currentFlags(entityId)));
-    }
-
-    @Unique
-    private SynchedEntityData.DataValue<Byte> hydraulic$currentFlags(int entityId) {
-        ServerGamePacketListenerImpl listener = (ServerGamePacketListenerImpl) (Object) this;
-        net.minecraft.world.entity.Entity entity = listener.getPlayer().level().getEntity(entityId);
-        byte flags = entity == null ? 0 : entity.getEntityData().get(EntityAccessor.hydraulic$dataSharedFlags());
-        return SynchedEntityData.DataValue.create(EntityAccessor.hydraulic$dataSharedFlags(), flags);
     }
 
     /** Preserves custom map markers as readable vanilla target dots instead of losing the map update. */
@@ -528,39 +492,13 @@ public class ServerCommonPacketListenerImplMixin {
     }
 
     /**
-     * Rewrites the packets carried inside a bundle.
-     * <p>
-     * A spawning entity does not arrive on its own: the server gathers the spawn, its metadata and
-     * its attributes and sends them as one bundle, so a check for the spawn packet alone never
-     * matches and the modded entity inside travels untouched - straight into the failed read this
-     * class exists to prevent. The bundle has to be opened and put back together.
-     *
-     * @param bundle the bundle on its way to a Bedrock player
-     * @return the bundle, or a new one when something inside it needed changing
-     */
-    @Unique
-    @SuppressWarnings("unchecked")
-    private Packet<?> hydraulic$rewriteBundle(@NotNull ClientboundBundlePacket bundle) {
-        List<Packet<? super ClientGamePacketListener>> rewritten = new ArrayList<>();
-
-        boolean changed = false;
-        for (Packet<? super ClientGamePacketListener> sub : bundle.subPackets()) {
-            Packet<?> next = this.hydraulic$rewrite(sub);
-            changed |= next != sub;
-            rewritten.add((Packet<? super ClientGamePacketListener>) next);
-        }
-
-        return changed ? new ClientboundBundlePacket(rewritten) : bundle;
-    }
-
-    /**
-     * Drops recipes whose display type or concrete item a mod added, which Geyser cannot read.
+     * Drops only modded display types. Ordinary recipes with custom items remain available;
+     * RecipeComparatorMixin handles their empty slots in Geyser's descriptor ordering.
      */
     @Unique
     private static Packet<?> hydraulic$filterModdedRecipes(@NotNull ClientboundRecipeBookAddPacket packet) {
         List<ClientboundRecipeBookAddPacket.Entry> readable = packet.entries().stream()
-                .filter(entry -> hydraulic$isVanillaDisplay(entry.contents().display())
-                        && hydraulic$hasVanillaRecipeItems(entry.contents().display()))
+                .filter(entry -> hydraulic$isVanillaDisplay(entry.contents().display()))
                 .toList();
 
         int dropped = packet.entries().size() - readable.size();
@@ -568,85 +506,8 @@ public class ServerCommonPacketListenerImplMixin {
             return packet;
         }
 
-        hydraulic$LOGGER.debug("Dropped {} recipe(s) with a display type or item Geyser cannot compare", dropped);
+        hydraulic$LOGGER.debug("Dropped {} recipe(s) with a modded display type", dropped);
         return new ClientboundRecipeBookAddPacket(readable, packet.replace());
-    }
-
-    /**
-     * Geyser sorts the resolved entries in a recipe display using its vanilla item registry. A
-     * concrete modded item resolves to an unknown descriptor and makes that comparator throw,
-     * losing the whole recipe packet. The server still accepts the recipe when crafted manually;
-     * only the unsafe recipe-book display is omitted for Bedrock players.
-     */
-    @Unique
-    private static boolean hydraulic$hasVanillaRecipeItems(@NotNull RecipeDisplay display) {
-        if (!hydraulic$isVanillaSlot(display.result()) || !hydraulic$isVanillaSlot(display.craftingStation())) {
-            return false;
-        }
-        if (display instanceof ShapedCraftingRecipeDisplay shaped) {
-            return shaped.ingredients().stream().allMatch(ServerCommonPacketListenerImplMixin::hydraulic$isVanillaSlot);
-        }
-        if (display instanceof ShapelessCraftingRecipeDisplay shapeless) {
-            return shapeless.ingredients().stream().allMatch(ServerCommonPacketListenerImplMixin::hydraulic$isVanillaSlot);
-        }
-        if (display instanceof FurnaceRecipeDisplay furnace) {
-            return hydraulic$isVanillaSlot(furnace.ingredient()) && hydraulic$isVanillaSlot(furnace.fuel());
-        }
-        if (display instanceof StonecutterRecipeDisplay stonecutter) {
-            return hydraulic$isVanillaSlot(stonecutter.input());
-        }
-        if (display instanceof SmithingRecipeDisplay smithing) {
-            return hydraulic$isVanillaSlot(smithing.template())
-                    && hydraulic$isVanillaSlot(smithing.base())
-                    && hydraulic$isVanillaSlot(smithing.addition());
-        }
-        return false;
-    }
-
-    @Unique
-    private static boolean hydraulic$isVanillaSlot(@NotNull SlotDisplay slot) {
-        if (slot instanceof SlotDisplay.ItemSlotDisplay item) {
-            Identifier key = item.item().unwrapKey().map(k -> k.identifier()).orElse(null);
-            return key != null && key.getNamespace().equals(Identifier.DEFAULT_NAMESPACE);
-        }
-        if (slot instanceof SlotDisplay.ItemStackSlotDisplay stack) {
-            Identifier key = stack.stack().item().unwrapKey().map(k -> k.identifier()).orElse(null);
-            return key != null && key.getNamespace().equals(Identifier.DEFAULT_NAMESPACE);
-        }
-        if (slot instanceof SlotDisplay.Composite composite) {
-            return composite.contents().stream().allMatch(ServerCommonPacketListenerImplMixin::hydraulic$isVanillaSlot);
-        }
-        if (slot instanceof SlotDisplay.WithRemainder remainder) {
-            return hydraulic$isVanillaSlot(remainder.input()) && hydraulic$isVanillaSlot(remainder.remainder());
-        }
-        if (slot instanceof SlotDisplay.OnlyWithComponent component) {
-            return hydraulic$isVanillaSlot(component.source());
-        }
-        if (slot instanceof SlotDisplay.WithAnyPotion potion) {
-            return hydraulic$isVanillaSlot(potion.display());
-        }
-        if (slot instanceof SlotDisplay.SmithingTrimDemoSlotDisplay trim) {
-            return hydraulic$isVanillaSlot(trim.base()) && hydraulic$isVanillaSlot(trim.material());
-        }
-        if (slot instanceof SlotDisplay.DyedSlotDemo dyed) {
-            return hydraulic$isVanillaSlot(dyed.dye()) && hydraulic$isVanillaSlot(dyed.target());
-        }
-
-        if (slot instanceof SlotDisplay.TagSlotDisplay tag) {
-            // A minecraft-namespaced tag can still contain modded items after datapacks merge it.
-            // Geyser expands the tag, encounters that custom item beside an empty shaped-recipe
-            // slot, and its descriptor comparator throws. Inspect the resolved holders rather than
-            // trusting the tag's own namespace.
-            return BuiltInRegistries.ITEM.get(tag.tag())
-                    .map(holders -> holders.stream().allMatch(holder -> holder.unwrapKey()
-                            .map(key -> key.identifier().getNamespace().equals(Identifier.DEFAULT_NAMESPACE))
-                            .orElse(false)))
-                    .orElse(false);
-        }
-
-        // Empty displays are safe. Any-fuel expands through a server-side set which can contain
-        // custom fuels, so omit those recipe-book entries instead of risking the whole join packet.
-        return slot instanceof SlotDisplay.Empty;
     }
 
     /**
@@ -679,31 +540,6 @@ public class ServerCommonPacketListenerImplMixin {
         net.minecraft.core.Registry registry = stat.getType().getRegistry();
         Identifier value = registry.getKey(stat.getValue());
         return value != null && value.getNamespace().equals(Identifier.DEFAULT_NAMESPACE);
-    }
-
-    /**
-     * Sends a modded sound by name rather than by registry id.
-     * <p>
-     * Sounds normally travel as an index into the sound registry, but Geyser's copy of MCProtocolLib
-     * only knows the vanilla entries, so a mod's sound sits past the end of its table and reading the
-     * packet throws {@code ArrayIndexOutOfBoundsException} - the sound is lost, and with it things
-     * like the noise a modded door makes. The protocol can carry the sound inline instead, which
-     * Geyser reads happily and forwards to Bedrock under its own name; the converted pack defines
-     * that name, so the sound actually plays.
-     *
-     * @param packet the sound packet on its way to a Bedrock player
-     * @return the packet, rewritten to name the sound if a mod provides it
-     */
-    @Unique
-    private static Packet<?> hydraulic$inlineModdedSound(@NotNull ClientboundSoundPacket packet) {
-        SoundEvent event = packet.getSound().value();
-        if (event.location().getNamespace().equals("minecraft")) {
-            return packet; // Geyser knows every vanilla sound, so an id is fine
-        }
-
-        return new ClientboundSoundPacket(Holder.direct(event), packet.getSource(),
-                packet.getX(), packet.getY(), packet.getZ(),
-                packet.getVolume(), packet.getPitch(), packet.getSeed());
     }
 
     /**
@@ -893,12 +729,11 @@ public class ServerCommonPacketListenerImplMixin {
     /**
      * Floodgate gives Bedrock players a UUID whose most significant bits are zero, which is how
      * Floodgate itself identifies them. Players who linked their Bedrock account to a Java one keep
-     * their Java UUID and so aren't matched here.
+     * their Java UUID and are identified through Geyser instead.
      */
     @Unique
     private static boolean hydraulic$isBedrockPlayer(ServerCommonPacketListenerImpl listener) {
-        java.util.UUID uuid = listener.getOwner().id();
-        return GeyserApi.api().isBedrockPlayer(uuid) || uuid.getMostSignificantBits() == 0;
+        return BedrockPlayers.isBedrock(listener.getOwner().id());
     }
 
     @Unique

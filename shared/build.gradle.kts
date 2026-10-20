@@ -24,6 +24,12 @@ dependencies {
     annotationProcessor(libs.auto.service)
 
     testImplementation("org.junit.jupiter:junit-jupiter:5.14.0")
+    testImplementation("net.kyori:examination-api:1.3.0")
+    testImplementation(libs.geyser.core) {
+        exclude(group = "io.netty")
+        exclude(group = "io.netty.incubator")
+        exclude(group = "org.checkerframework")
+    }
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.14.0")
 
     // Only here to suppress "unknown enum constant EnvType.CLIENT" warnings.

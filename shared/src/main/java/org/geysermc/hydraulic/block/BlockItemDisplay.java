@@ -196,6 +196,19 @@ public final class BlockItemDisplay {
         }
     }
 
+    /** Release displays as chunks leave this player's view instead of retaining them until logout. */
+    public void forgetChunk(int chunkX, int chunkZ, @NotNull Consumer<Packet<?>> send) {
+        var iterator = this.shown.entrySet().iterator();
+        while (iterator.hasNext()) {
+            var entry = iterator.next();
+            BlockPos position = entry.getKey();
+            if ((position.getX() >> 4) == chunkX && (position.getZ() >> 4) == chunkZ) {
+                send.accept(new ClientboundRemoveEntitiesPacket(entry.getValue().entityIds()));
+                iterator.remove();
+            }
+        }
+    }
+
     /**
      * Forgets everything shown, telling the player to drop it too. Used when a player leaves or the
      * world changes under them, so nothing is left hanging in mid-air.

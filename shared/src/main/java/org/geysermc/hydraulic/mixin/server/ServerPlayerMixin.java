@@ -7,7 +7,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.Slot;
-import org.geysermc.geyser.api.GeyserApi;
+import org.geysermc.hydraulic.util.BedrockPlayers;
 import org.geysermc.hydraulic.menu.MenuLayout;
 import org.geysermc.hydraulic.menu.KnownMenuLayouts;
 import org.geysermc.hydraulic.menu.RedirectedChestMenu;
@@ -67,6 +67,9 @@ public abstract class ServerPlayerMixin {
             layout = KnownMenuLayouts.find(original.getClass().getName(), points);
         }
         if (layout == null) {
+            layout = MenuLayout.compact(points);
+        }
+        if (layout == null) {
             hydraulic$reportUnsupported(identifier,
                     "its slot geometry cannot be represented safely by a Bedrock chest");
             return original;
@@ -81,8 +84,7 @@ public abstract class ServerPlayerMixin {
 
     @Unique
     private static boolean hydraulic$isBedrock(ServerPlayer player) {
-        return GeyserApi.api().isBedrockPlayer(player.getUUID())
-                || player.getUUID().getMostSignificantBits() == 0;
+        return BedrockPlayers.isBedrock(player.getUUID());
     }
 
     @Unique

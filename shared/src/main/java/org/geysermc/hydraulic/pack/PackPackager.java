@@ -52,9 +52,15 @@ public class PackPackager implements PackageHandler {
     private static final int MAX_PATH_LENGTH = 80;
 
     private static final int BUFFER_SIZE = 64 * 1024;
+    private boolean packaged;
+
+    boolean packaged() {
+        return this.packaged;
+    }
 
     @Override
     public void pack(@NotNull PackConverter converter, @NotNull Path path, @NotNull Path outputPath, @NotNull LogListener logger) throws IOException {
+        this.packaged = false;
         List<Path> files = new ArrayList<>();
         try (Stream<Path> walker = Files.walk(path)) {
             walker.filter(Files::isRegularFile).forEach(files::add);
@@ -87,29 +93,27 @@ public class PackPackager implements PackageHandler {
         // turns every one into its own set of syscalls. Several mods are converted at once, so that
         // contention adds up quickly - enough on a large modpack to keep the server thread waiting
         // past the watchdog's limit and have it kill the server.
-        try (OutputStream out = new BufferedOutputStream(Files.newOutputStream(outputPath), BUFFER_SIZE);
-             ZipOutputStream zip = new ZipOutputStream(out)) {
-            // Packs are mostly PNG and OGG, which are already compressed, so squeezing them harder
-            // costs a lot of time for almost no saving.
-            zip.setLevel(Deflater.BEST_SPEED);
-
-            for (Map.Entry<Path, String> entry : entryNames.entrySet()) {
-                String name = entry.getValue();
-
-                byte[] data;
-                // Any file that references a renamed path has to be updated to match
-                if (!renames.isEmpty() && name.endsWith(".json")) {
-                    String content = Files.readString(entry.getKey(), StandardCharsets.UTF_8);
-                    data = updateReferences(content, renames).getBytes(StandardCharsets.UTF_8);
-                } else {
-                    data = Files.readAllBytes(entry.getKey());
+        PackOutput.write(outputPath, temporary -> {
+            try (OutputStream out = new BufferedOutputStream(Files.newOutputStream(temporary), BUFFER_SIZE);
+                 ZipOutputStream zip = new ZipOutputStream(out)) {
+                // PNG and OGG are already compressed; compressing them harder saves little.
+                zip.setLevel(Deflater.BEST_SPEED);
+                for (Map.Entry<Path, String> entry : entryNames.entrySet()) {
+                    String name = entry.getValue();
+                    byte[] data;
+                    if (!renames.isEmpty() && name.endsWith(".json")) {
+                        String content = Files.readString(entry.getKey(), StandardCharsets.UTF_8);
+                        data = updateReferences(content, renames).getBytes(StandardCharsets.UTF_8);
+                    } else {
+                        data = Files.readAllBytes(entry.getKey());
+                    }
+                    zip.putNextEntry(zipEntry(renames.getOrDefault(name, name), data));
+                    zip.write(data);
+                    zip.closeEntry();
                 }
-
-                zip.putNextEntry(zipEntry(renames.getOrDefault(name, name), data));
-                zip.write(data);
-                zip.closeEntry();
             }
-        }
+        });
+        this.packaged = true;
 
         LOGGER.info("Packaged {} files in {}ms", entryNames.size(), System.currentTimeMillis() - start);
     }

@@ -55,8 +55,16 @@ public final class AnimatedTextureConverter {
             throw new IOException("Animated texture is not a readable PNG");
         }
 
-        int frameWidth = metadata.width() > 0 ? metadata.width() : source.getWidth();
-        int frameHeight = metadata.height() > 0 ? metadata.height() : frameWidth;
+        // Match Minecraft's AnimationMetadataSection.calculateFrameSize: with neither dimension
+        // specified use square frames; with one specified the other spans the complete image.
+        int frameWidth;
+        int frameHeight;
+        if (metadata.width() > 0 || metadata.height() > 0) {
+            frameWidth = metadata.width() > 0 ? metadata.width() : source.getWidth();
+            frameHeight = metadata.height() > 0 ? metadata.height() : source.getHeight();
+        } else {
+            frameWidth = frameHeight = Math.min(source.getWidth(), source.getHeight());
+        }
         if (frameWidth <= 0 || frameHeight <= 0
                 || source.getWidth() % frameWidth != 0 || source.getHeight() % frameHeight != 0) {
             throw new IOException("Animation frame size " + frameWidth + "x" + frameHeight

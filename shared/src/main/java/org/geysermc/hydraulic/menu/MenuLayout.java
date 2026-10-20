@@ -4,6 +4,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -28,6 +29,53 @@ public final class MenuLayout {
         public Layout {
             redirectedSlots = Map.copyOf(redirectedSlots);
         }
+    }
+
+    /**
+     * A compact fallback for ordinary slot-only machines whose Java artwork is not a chest grid.
+     * Every slot retains its original server index; only its position in the Bedrock chest changes.
+     * Button-driven screens must be rejected by the caller before selecting this layout.
+     */
+    @Nullable
+    public static Layout compact(List<SlotPoint> slots) {
+        List<SlotPoint> machine = slots.stream().filter(slot -> !slot.playerInventory())
+                .sorted(Comparator.comparingInt(SlotPoint::y).thenComparingInt(SlotPoint::x)
+                        .thenComparingInt(SlotPoint::menuIndex)).toList();
+        if (machine.isEmpty() || machine.size() > 54 || slots.size() != machine.size() + 36) {
+            return null;
+        }
+        Set<Integer> menuIndexes = new HashSet<>();
+        Set<Integer> inventoryIndexes = new HashSet<>();
+        Set<Long> positions = new HashSet<>();
+        for (SlotPoint slot : slots) {
+            if (slot.fake() || !slot.active() || slot.menuIndex() < 0 || !menuIndexes.add(slot.menuIndex())) {
+                return null;
+            }
+            if (slot.playerInventory()) {
+                if (slot.containerIndex() < 0 || slot.containerIndex() > 35
+                        || !inventoryIndexes.add(slot.containerIndex())) {
+                    return null;
+                }
+            } else if (!positions.add(((long) slot.x() << 32) | (slot.y() & 0xffffffffL))) {
+                // Overlapping slots can be alternative controls rather than independent inventory.
+                return null;
+            }
+        }
+        if (inventoryIndexes.size() != 36) {
+            return null;
+        }
+        int rows = (machine.size() + 8) / 9;
+        Map<Integer, Integer> redirects = new HashMap<>();
+        for (int index = 0; index < machine.size(); index++) {
+            redirects.put(index, machine.get(index).menuIndex());
+        }
+        for (SlotPoint slot : slots) {
+            if (slot.playerInventory()) {
+                int index = slot.containerIndex();
+                redirects.put(rows * 9 + (index < 9 ? 27 + index : index - 9), slot.menuIndex());
+            }
+        }
+        return new Layout(rows, redirects);
     }
 
     @Nullable
